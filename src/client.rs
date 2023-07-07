@@ -1,23 +1,23 @@
-use crate::server;
+use serde::{Deserialize, Serialize};
 
-use std::sync::mpsc::Sender;
+use crate::{connection::Connection, server};
 
-pub struct Client<'a> {
+pub struct Client {
     player_one: Player,
     player_two: Player,
-    sender: &'a Sender<Event>,
+    connection: Connection,
 }
 
-impl Client<'_> {
-    pub fn new(sender: &Sender<Event>) -> Client {
+impl Client {
+    pub fn new(connection: Connection) -> Client {
         Client {
             player_one: Player { icon: 'X' },
             player_two: Player { icon: 'O' },
-            sender,
+            connection,
         }
     }
 
-    pub fn handle_event(&self, event: server::Event) {
+    pub async fn handle_event(&mut self, event: server::Event) {
         match event {
             server::Event::StateChanged {
                 state,
@@ -36,7 +36,7 @@ impl Client<'_> {
                     },
                 }
             }
-            server::Event::PlayerTurn(id) => self.make_player_move(id),
+            server::Event::PlayerTurn(id) => self.make_player_move(id).await,
             server::Event::ErrorOccurred(error) => self.handle_error(error),
         }
     }
@@ -56,15 +56,27 @@ impl Client<'_> {
         }
     }
 
-    fn make_player_move(&self, player_id: u8) {
+    async fn make_player_move(&mut self, player_id: u8) {
         let player = self.get_player_by_id(player_id);
         println!("Player {}'s turn!", player.icon);
 
         let move_index = player.get_move();
-        let _ = self.sender.send(Event::MoveMade {
+        let _ = self.connection.write_event(Event::MoveMade {
             player_id,
             move_index,
-        });
+        }).await;
+    }
+
+    pub async fn play_game(&mut self) {
+        loop {
+            match self.connection.read_event().await {
+                Ok(event) => self.handle_event(event).await,
+                Err(error) => {
+                    eprintln!("Error: {}\n", error);
+                    continue;
+                }
+            }
+        }
     }
 
     fn handle_error(&self, error: server::Error) {
@@ -95,6 +107,7 @@ impl Client<'_> {
     }
 }
 
+#[derive(Deserialize, Serialize)]
 pub enum Event {
     MoveMade { player_id: u8, move_index: usize },
 }
