@@ -1,32 +1,50 @@
 mod client;
 mod server;
+mod connection;
 
-use std::sync::mpsc;
-use std::thread;
+use tokio::net::{TcpListener, TcpStream};
+use crate::{client::Client, connection::Connection};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("Hello from Rust Game Server, welcome to Tic Tac Toe!");
 
-    // Channel for sending messages from the server thread to the client (main) thread
-    let (tx_s, rx_c) = mpsc::channel();
-
-    // Channel for sending messages from the client (main) thread to the server thread
-    let (tx_c, rx_s) = mpsc::channel();
+    let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
 
     // Spawn the server thread
-    let server_handle = thread::spawn(move || {
-        // Game set up
-        let player_one = server::Player::new_player_one(&tx_s, &rx_s);
-        let player_two = server::Player::new_player_two(&tx_s, &rx_s);
+    let server_handle = tokio::spawn(async move {
+        // Wait for a connection of player one
+        let (stream_one, _) = listener.accept().await.unwrap();
 
-        let mut server = server::Server::new(&player_one, &player_two);
-        server.play_game();
+        // Wait for a connection of player two
+        let (stream_two, _) = listener.accept().await.unwrap();
+
+        // Create connections for the players
+        let connection_one = Connection::new(1, stream_one);
+        let connection_two = Connection::new(1, stream_two);
+
+        // Game set up
+        let player_one = server::Player::new_player_one(connection_one);
+        let player_two = server::Player::new_player_two(connection_two);
+
+        // Play the game
+        let mut server = server::Server::new(player_one, player_two);
+        server.play_game().await;
     });
 
-    let client = client::Client::new(&tx_c);
-    for event in rx_c {
-        client.handle_event(event);
-    }
+    // Spawn a thread for a single player
+    let client_handle = tokio::spawn(async {
+        let stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+        let mut client = Client::new(Connection::new(0, stream));
+        client.play_game().await;
+    });
 
-    server_handle.join().unwrap();
+    // Set up connection for the other player
+    let stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+    let mut client = Client::new(Connection::new(1, stream));
+    client.play_game().await;
+
+    // Wait for the server and client to finish
+    client_handle.await.unwrap();
+    server_handle.await.unwrap();
 }
