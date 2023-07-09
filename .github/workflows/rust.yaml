@@ -13,8 +13,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
+
       - name: Build
         run: cargo build --verbose
+
+      - name: Upload binary
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: binary
+          path: target/debug/rust-game-server
+
       - name: Test
         run: cargo test --verbose
