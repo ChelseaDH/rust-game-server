@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fmt::Formatter;
+
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use thiserror::__private::DisplayAsDisplay;
@@ -42,7 +43,7 @@ impl Connection {
         Ok(serde_json::from_slice(&serialised)?)
     }
 
-    async fn read_to_buffer(&mut self, buffer: &mut [u8]) -> Result<(), ReadWriteError> {
+    async fn read_to_buffer(&mut self, buffer: &mut [u8]) -> Result<(), std::io::Error> {
         loop {
             match self.stream.read(buffer).await {
                 Ok(0) => continue,

@@ -1,6 +1,14 @@
-use serde::{Serialize, Deserialize};
+use std::fmt;
+use std::fmt::Formatter;
+
+use serde::{Deserialize, Serialize};
+use thiserror::__private::DisplayAsDisplay;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{client, connection::Connection};
+use crate::connection::ReadWriteError;
+use crate::server::Outcome::{Draw, WinnerFound};
 
 pub const PLAYER_ONE_ID: u8 = 1;
 pub const PLAYER_TWO_ID: u8 = 2;
@@ -8,91 +16,158 @@ pub const PLAYER_TWO_ID: u8 = 2;
 pub struct Server {
     player_one: Player,
     player_two: Player,
-    current_player: u8,
     board: Board,
+    state: State,
+    channel: (Sender<ServerEvent>, Receiver<ServerEvent>),
+}
+
+#[derive(Copy, Clone)]
+enum State {
+    PreInitialise,
+    PlayerTurn { player_id: u8 },
+    GameOver { outcome: Outcome },
+    Failure,
 }
 
 impl Server {
     pub fn new(player_one: Player, player_two: Player) -> Server {
-         Server {
+        Server {
             player_one,
             player_two,
-            current_player: PLAYER_ONE_ID,
             board: Board::new(),
+            state: State::PreInitialise,
+            channel: mpsc::channel(1),
         }
     }
 
-    pub async fn play_game(&mut self) {
-        let (mut state, mut winning_player) = (State::InProgress, None);
-        self.dispatch_state_changed_event(state, winning_player).await;
+    pub async fn init(&mut self) {
+        &mut self.channel.0.send(ServerEvent::BeginGame).await.unwrap();
+        self.run().await
+    }
 
-        while state == State::InProgress {
-            self.dispatch_player_turn_event().await;
+    async fn run(&mut self) {
+        loop {
+            let event = tokio::select! {
+                result = self.channel.1.recv() => IncomingEvent::Server(result.unwrap()),
+                result = self.player_one.connection.read_event() => IncomingEvent::Client(result.unwrap()),
+                result = self.player_two.connection.read_event() => IncomingEvent::Client(result.unwrap()),
+                else => break,
+            };
 
-            let received_event = self.read_event_from_current_player().await;
-            match self.handle_event(received_event) {
-                Ok(_) => (),
-                Err(e) => {
-                    self.dispatch_event_to_current_player(Event::ErrorOccurred(e)).await;
-                    continue;
-                }
+            self.handle_incoming_event(event).await.unwrap()
+        }
+    }
+
+    async fn handle_incoming_event(&mut self, event: IncomingEvent) -> Result<(), ServerError> {
+        match (self.state, event) {
+            (State::PreInitialise, IncomingEvent::Server(ServerEvent::BeginGame)) => {
+                self.dispatch_state_changed_event(None).await?;
+                self.state = State::PlayerTurn { player_id: PLAYER_ONE_ID };
+                self.dispatch_player_turn_event().await?;
+
+                Ok(())
             }
+            (State::PlayerTurn { player_id: current_player_id }, IncomingEvent::Client(client::Event::MoveMade { player_id, move_index })) => {
+                if player_id != current_player_id {
+                    return Err(ServerError::Server(Error::UnexpectedPlayer));
+                }
 
-            (state, winning_player) = self.board.recalculate_state();
-            self.dispatch_state_changed_event(state, winning_player).await;
-            self.swap_player();
+                match self.board.add_move(player_id, move_index) {
+                    Err(e) => {
+                        self.dispatch_event_to_current_player(Event::ErrorOccurred(e)).await?
+                    },
+                    Ok(()) => {
+                        let outcome = self.board.calculate_outcome();
+                        self.dispatch_state_changed_event(outcome).await?;
+
+                        match outcome {
+                            None => {
+                                self.state = State::PlayerTurn { player_id: self.get_next_player(current_player_id) };
+                                self.dispatch_player_turn_event().await?;
+                            },
+                            Some(oc) => {
+                                self.state = State::GameOver { outcome: oc }
+                            }
+                        }
+                    }
+                }
+
+                Ok(())
+            }
+            _ => Ok(())
         }
     }
 
-    fn swap_player(&mut self) {
-        self.current_player = if self.current_player == PLAYER_ONE_ID {
+    // pub async fn play_game(&mut self) {
+    //     let (mut state, mut winning_player) = (BoardState::InProgress, None);
+    //     self.dispatch_state_changed_event(state, winning_player).await;
+    //
+    //     while state == BoardState::InProgress {
+    //         self.dispatch_player_turn_event().await;
+    //
+    //         let received_event = self.read_event_from_current_player().await;
+    //         match self.handle_event(received_event) {
+    //             Ok(_) => (),
+    //             Err(e) => {
+    //                 self.dispatch_event_to_current_player(Event::ErrorOccurred(e)).await;
+    //                 continue;
+    //             }
+    //         }
+    //
+    //         (state, winning_player) = self.board.recalculate_state();
+    //         self.dispatch_state_changed_event(state, winning_player).await;
+    //         self.swap_player();
+    //     }
+    // }
+
+    fn get_next_player(&mut self, current_player_id: u8) -> u8 {
+        if current_player_id == PLAYER_ONE_ID {
             PLAYER_TWO_ID
         } else {
             PLAYER_ONE_ID
         }
     }
 
-    async fn dispatch_event_to_all_players(&mut self, event: Event) {
+    async fn dispatch_event_to_all_players(&mut self, event: Event) -> Result<(), ReadWriteError> {
         if self.player_one.connection.id == self.player_two.connection.id {
-            self.player_one.connection.write_event(event).await.unwrap();
+            self.player_one.connection.write_event(event).await
         } else {
             let event_copy = event;
-            self.player_one.connection.write_event(event).await.unwrap();
-            self.player_two.connection.write_event(event_copy).await.unwrap();
+            self.player_one.connection.write_event(event).await?;
+            self.player_two.connection.write_event(event_copy).await
         }
     }
 
-    async fn dispatch_event_to_current_player(&mut self, event: Event) {
+    async fn dispatch_event_to_current_player(&mut self, event: Event) -> Result<(), ReadWriteError> {
         match self.current_player {
-            PLAYER_ONE_ID => self.player_one.connection.write_event(event).await.unwrap(),
-            PLAYER_TWO_ID => self.player_two.connection.write_event(event).await.unwrap(),
-            _ => panic!("Unexpected id provided"),
-        };
-    }
-
-    async fn read_event_from_current_player(&mut self) -> client::Event {
-        match self.current_player {
-            PLAYER_ONE_ID => self.player_one.connection.read_event().await.unwrap(),
-            PLAYER_TWO_ID => self.player_two.connection.read_event().await.unwrap(),
+            PLAYER_ONE_ID => self.player_one.connection.write_event(event).await,
+            PLAYER_TWO_ID => self.player_two.connection.write_event(event).await,
             _ => panic!("Unexpected id provided"),
         }
     }
 
-    async fn dispatch_state_changed_event(&mut self, state: State, winning_player_id: Option<u8>) {
+    // async fn read_event_from_current_player(&mut self) -> client::Event {
+    //     match self.current_player {
+    //         PLAYER_ONE_ID => self.player_one.connection.read_event().await.unwrap(),
+    //         PLAYER_TWO_ID => self.player_two.connection.read_event().await.unwrap(),
+    //         _ => panic!("Unexpected id provided"),
+    //     }
+    // }
+
+    async fn dispatch_state_changed_event(&mut self, outcome: Option<Outcome>) -> Result<(), ReadWriteError> {
         let cells_event_rep = self
             .board
             .cells
             .map(|cell| cell.occupying_player_id);
 
         self.dispatch_event_to_all_players(Event::StateChanged {
-            state,
             board_cells: cells_event_rep,
-            winning_player_id,
-        }).await;
+            outcome,
+        }).await
     }
 
-    async fn dispatch_player_turn_event(&mut self) {
-        self.dispatch_event_to_current_player(Event::PlayerTurn(self.current_player)).await;
+    async fn dispatch_player_turn_event(&mut self) -> Result<(), ReadWriteError> {
+        self.dispatch_event_to_current_player(Event::PlayerTurn(self.current_player)).await
     }
 
     fn handle_event(&mut self, event: client::Event) -> Result<(), Error> {
@@ -114,12 +189,41 @@ impl Server {
 #[derive(Copy, Clone, Serialize, Deserialize)]
 pub enum Event {
     StateChanged {
-        state: State,
         board_cells: [Option<u8>; BOARD_SIZE],
-        winning_player_id: Option<u8>,
+        outcome: Option<Outcome>,
     },
     PlayerTurn(u8),
     ErrorOccurred(Error),
+}
+
+#[derive(Debug, Deserialize)]
+enum ServerEvent {
+    BeginGame,
+    PlayerDisconnected,
+}
+
+#[derive(Deserialize)]
+enum IncomingEvent {
+    Server(ServerEvent),
+    Client(client::Event),
+}
+
+#[derive(Debug)]
+enum ServerError {
+    ReadWrite(ReadWriteError),
+    Server(Error),
+}
+
+impl From<ReadWriteError> for ServerError {
+    fn from(value: ReadWriteError) -> Self {
+        ServerError::ReadWrite(value)
+    }
+}
+
+impl From<Error> for ServerError {
+    fn from(value: Error) -> Self {
+        ServerError::Server(value)
+    }
 }
 
 #[derive(Debug)]
@@ -178,10 +282,16 @@ impl BoardCell {
 pub const BOARD_SIZE: usize = 9;
 
 #[derive(PartialEq, Debug, Copy, Clone, Serialize, Deserialize)]
-pub enum State {
+pub enum BoardState {
     InProgress,
     Draw,
     WinnerFound,
+}
+
+#[derive(Copy, Clone, Serialize, Deserialize)]
+pub enum Outcome {
+    Draw,
+    WinnerFound { winning_player_id: u8 },
 }
 
 struct Board {
@@ -222,14 +332,14 @@ impl Board {
     ///
     /// A `tuple` containing the calculated `State` and an `Option` representing whether or not a
     /// winning `Player` was identified using their id.
-    fn recalculate_state(&self) -> (State, Option<u8>) {
+    fn recalculate_state(&self) -> (BoardState, Option<u8>) {
         // If first cell is occupied, check for win in first row, column, and left diagonal
         if self.cells[0].state == BoardCellState::Occupied
             && ((self.cells[0] == self.cells[1] && self.cells[0] == self.cells[2])
-                || (self.cells[0] == self.cells[3] && self.cells[0] == self.cells[6])
-                || (self.cells[0] == self.cells[4] && self.cells[0] == self.cells[8]))
+            || (self.cells[0] == self.cells[3] && self.cells[0] == self.cells[6])
+            || (self.cells[0] == self.cells[4] && self.cells[0] == self.cells[8]))
         {
-            return (State::WinnerFound, self.cells[0].occupying_player_id);
+            return (BoardState::WinnerFound, self.cells[0].occupying_player_id);
         }
 
         // Check for win in second column
@@ -237,7 +347,7 @@ impl Board {
             && self.cells[1] == self.cells[4]
             && self.cells[1] == self.cells[7]
         {
-            return (State::WinnerFound, self.cells[1].occupying_player_id);
+            return (BoardState::WinnerFound, self.cells[1].occupying_player_id);
         }
 
         // Check for win in third column and right diagonal
@@ -245,7 +355,7 @@ impl Board {
             && ((self.cells[2] == self.cells[5] && self.cells[2] == self.cells[8])
                 || (self.cells[2] == self.cells[4] && self.cells[2] == self.cells[6]))
         {
-            return (State::WinnerFound, self.cells[2].occupying_player_id);
+            return (BoardState::WinnerFound, self.cells[2].occupying_player_id);
         }
 
         // Check for win in second row
@@ -253,7 +363,7 @@ impl Board {
             && self.cells[3] == self.cells[4]
             && self.cells[3] == self.cells[5]
         {
-            return (State::WinnerFound, self.cells[3].occupying_player_id);
+            return (BoardState::WinnerFound, self.cells[3].occupying_player_id);
         }
 
         // Check for win in third row
@@ -261,7 +371,7 @@ impl Board {
             && self.cells[6] == self.cells[7]
             && self.cells[6] == self.cells[8]
         {
-            return (State::WinnerFound, self.cells[6].occupying_player_id);
+            return (BoardState::WinnerFound, self.cells[6].occupying_player_id);
         }
 
         // Check for draw
@@ -270,14 +380,68 @@ impl Board {
             .iter()
             .all(|cell| cell.state == BoardCellState::Occupied)
         {
-            return (State::Draw, None);
+            return (BoardState::Draw, None);
         }
 
-        (State::InProgress, None)
+        (BoardState::InProgress, None)
+    }
+
+    fn calculate_outcome(&self) -> Option<Outcome> {
+        // If first cell is occupied, check for win in first row, column, and left diagonal
+        if self.cells[0].state == BoardCellState::Occupied
+            && ((self.cells[0] == self.cells[1] && self.cells[0] == self.cells[2])
+            || (self.cells[0] == self.cells[3] && self.cells[0] == self.cells[6])
+            || (self.cells[0] == self.cells[4] && self.cells[0] == self.cells[8]))
+        {
+            return Some(WinnerFound { winning_player_id: self.cells[0].occupying_player_id.unwrap() })
+        }
+
+        // Check for win in second column
+        if self.cells[1].state == BoardCellState::Occupied
+            && self.cells[1] == self.cells[4]
+            && self.cells[1] == self.cells[7]
+        {
+            return return Some(WinnerFound { winning_player_id: self.cells[1].occupying_player_id.unwrap() })
+        }
+
+        // Check for win in third column and right diagonal
+        if self.cells[2].state == BoardCellState::Occupied
+            && ((self.cells[2] == self.cells[5] && self.cells[2] == self.cells[8])
+            || (self.cells[2] == self.cells[4] && self.cells[2] == self.cells[6]))
+        {
+            return return Some(WinnerFound { winning_player_id: self.cells[2].occupying_player_id.unwrap() })
+        }
+
+        // Check for win in second row
+        if self.cells[3].state == BoardCellState::Occupied
+            && self.cells[3] == self.cells[4]
+            && self.cells[3] == self.cells[5]
+        {
+            return return Some(WinnerFound { winning_player_id: self.cells[3].occupying_player_id.unwrap() })
+        }
+
+        // Check for win in third row
+        if self.cells[6].state == BoardCellState::Occupied
+            && self.cells[6] == self.cells[7]
+            && self.cells[6] == self.cells[8]
+        {
+            return Some(WinnerFound { winning_player_id: self.cells[6].occupying_player_id.unwrap() })
+        }
+
+        // Check for draw
+        if self
+            .cells
+            .iter()
+            .all(|cell| cell.state == BoardCellState::Occupied)
+        {
+            return Some(Draw);
+        }
+
+        None
     }
 }
 
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone, Serialize, Deserialize, Debug)]
 pub enum Error {
     InvalidCellIndex,
     CellOccupied,
@@ -294,6 +458,12 @@ impl Error {
             Error::CellOccupied => "This cell is already occupied, try again.".to_string(),
             Error::UnexpectedPlayer => "It's not your turn, try again.".to_string(),
         }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_user_message())
     }
 }
 
@@ -328,7 +498,7 @@ mod tests {
         let board = Board::new();
         let (state, winner) = board.recalculate_state();
 
-        assert_eq!(State::InProgress, state);
+        assert_eq!(BoardState::InProgress, state);
         assert_eq!(None, winner);
     }
 
@@ -341,7 +511,7 @@ mod tests {
         setup.board.cells[8] = setup.occupied_cell_player2;
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::InProgress, state);
+        assert_eq!(BoardState::InProgress, state);
         assert_eq!(None, winner);
     }
 
@@ -353,7 +523,7 @@ mod tests {
         setup.board.cells[2] = setup.occupied_cell_player1;
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::WinnerFound, state);
+        assert_eq!(BoardState::WinnerFound, state);
         assert_eq!(Some(1), winner);
     }
 
@@ -366,7 +536,7 @@ mod tests {
         setup.board.cells[5] = setup.occupied_cell_player1;
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::WinnerFound, state);
+        assert_eq!(BoardState::WinnerFound, state);
         assert_eq!(Some(1), winner);
     }
 
@@ -378,7 +548,7 @@ mod tests {
         setup.board.cells[8] = setup.occupied_cell_player2;
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::WinnerFound, state);
+        assert_eq!(BoardState::WinnerFound, state);
         assert_eq!(Some(2), winner);
     }
 
@@ -390,7 +560,7 @@ mod tests {
         setup.board.cells[6] = setup.occupied_cell_player1;
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::WinnerFound, state);
+        assert_eq!(BoardState::WinnerFound, state);
         assert_eq!(Some(1), winner);
     }
 
@@ -402,7 +572,7 @@ mod tests {
         setup.board.cells[7] = setup.occupied_cell_player1;
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::WinnerFound, state);
+        assert_eq!(BoardState::WinnerFound, state);
         assert_eq!(Some(1), winner);
     }
 
@@ -414,7 +584,7 @@ mod tests {
         setup.board.cells[8] = setup.occupied_cell_player1;
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::WinnerFound, state);
+        assert_eq!(BoardState::WinnerFound, state);
         assert_eq!(Some(1), winner);
     }
 
@@ -426,7 +596,7 @@ mod tests {
         setup.board.cells[8] = setup.occupied_cell_player1;
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::WinnerFound, state);
+        assert_eq!(BoardState::WinnerFound, state);
         assert_eq!(Some(1), winner);
     }
 
@@ -438,7 +608,7 @@ mod tests {
         setup.board.cells[6] = setup.occupied_cell_player1;
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::WinnerFound, state);
+        assert_eq!(BoardState::WinnerFound, state);
         assert_eq!(Some(1), winner);
     }
 
@@ -458,7 +628,7 @@ mod tests {
         ];
 
         let (state, winner) = setup.board.recalculate_state();
-        assert_eq!(State::Draw, state);
+        assert_eq!(BoardState::Draw, state);
         assert_eq!(None, winner);
     }
 }

@@ -1,9 +1,10 @@
+use tokio::net::{TcpListener, TcpStream};
+
+use crate::{client::Client, connection::Connection};
+
 mod client;
 mod server;
 mod connection;
-
-use tokio::net::{TcpListener, TcpStream};
-use crate::{client::Client, connection::Connection};
 
 #[tokio::main]
 async fn main() {
@@ -29,7 +30,7 @@ async fn main() {
 
         // Play the game
         let mut server = server::Server::new(player_one, player_two);
-        server.play_game().await;
+        server.init().await;
     });
 
     // Spawn a thread for a single player
