@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{connection::Connection, server};
+use crate::server::Outcome;
 
 pub struct Client {
     player_one: Player,
@@ -19,21 +20,17 @@ impl Client {
 
     pub async fn handle_event(&mut self, event: server::Event) {
         match event {
-            server::Event::StateChanged {
-                state,
-                board_cells,
-                winning_player_id,
-            } => {
+            server::Event::StateChanged { state, board_cells } => {
                 self.print_board(board_cells);
                 match state {
                     server::State::InProgress => (),
-                    server::State::Draw => println!("Game over! There was a draw!"),
-                    server::State::WinnerFound => match winning_player_id {
-                        None => println!("Game over! Someone won!"),
-                        Some(id) => {
-                            println!("Game over! Player {} won!", self.get_player_by_id(id).icon)
-                        }
-                    },
+                    server::State::GameOver(Outcome::Draw) => {
+                        println!("Game over! There was a draw!")
+                    }
+                    server::State::GameOver(Outcome::WinnerFound { player_id }) => println!(
+                        "Game over! Player {} won!",
+                        self.get_player_by_id(player_id).icon
+                    ),
                 }
             }
             server::Event::PlayerTurn(id) => self.make_player_move(id).await,
