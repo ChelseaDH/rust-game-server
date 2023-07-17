@@ -111,7 +111,7 @@ impl Server {
             state,
             board_cells: cells_event_rep,
         })
-            .await;
+        .await;
     }
 
     async fn dispatch_player_turn_event(&mut self) {
@@ -158,18 +158,14 @@ impl PartialEq for Player {
 }
 
 impl Player {
-    pub fn new_player_one(
-        connection: Connection,
-    ) -> Player {
+    pub fn new_player_one(connection: Connection) -> Player {
         Player {
             id: PLAYER_ONE_ID,
             connection,
         }
     }
 
-    pub fn new_player_two(
-        connection: Connection,
-    ) -> Player {
+    pub fn new_player_two(connection: Connection) -> Player {
         Player {
             id: PLAYER_TWO_ID,
             connection,
@@ -254,8 +250,8 @@ impl Board {
         // If first cell is occupied, check for win in first row, column, and left diagonal
         if self.cells[0].is_occupied()
             && ((self.cells[0] == self.cells[1] && self.cells[0] == self.cells[2])
-            || (self.cells[0] == self.cells[3] && self.cells[0] == self.cells[6])
-            || (self.cells[0] == self.cells[4] && self.cells[0] == self.cells[8]))
+                || (self.cells[0] == self.cells[3] && self.cells[0] == self.cells[6])
+                || (self.cells[0] == self.cells[4] && self.cells[0] == self.cells[8]))
         {
             return Some(Outcome::WinnerFound {
                 player_id: self.cells[0].get_occupying_player_id(),
@@ -275,7 +271,7 @@ impl Board {
         // Check for win in third column and right diagonal
         if self.cells[2].is_occupied()
             && ((self.cells[2] == self.cells[5] && self.cells[2] == self.cells[8])
-            || (self.cells[2] == self.cells[4] && self.cells[2] == self.cells[6]))
+                || (self.cells[2] == self.cells[4] && self.cells[2] == self.cells[6]))
         {
             return Some(Outcome::WinnerFound {
                 player_id: self.cells[2].get_occupying_player_id(),

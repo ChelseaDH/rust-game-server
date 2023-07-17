@@ -1,9 +1,10 @@
-mod client;
-mod server;
-mod connection;
-
 use tokio::net::{TcpListener, TcpStream};
+
 use crate::{client::Client, connection::Connection};
+
+mod client;
+mod connection;
+mod server;
 
 #[tokio::main]
 async fn main() {

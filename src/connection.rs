@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fmt::Formatter;
+
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use thiserror::__private::DisplayAsDisplay;
@@ -13,7 +14,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn new(id: u8, stream: TcpStream) -> Connection{
+    pub fn new(id: u8, stream: TcpStream) -> Connection {
         Connection { id, stream }
     }
 
@@ -61,7 +62,7 @@ impl Connection {
 #[derive(thiserror::Error, Debug)]
 pub enum ReadWriteError {
     Serde(#[from] serde_json::Error),
-    StreamReadWrite(#[from] std::io::Error)
+    StreamReadWrite(#[from] std::io::Error),
 }
 
 impl fmt::Display for ReadWriteError {

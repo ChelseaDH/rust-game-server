@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{connection::Connection, server};
 use crate::server::Outcome;
+use crate::{connection::Connection, server};
 
 pub struct Client {
     player_one: Player,
@@ -58,10 +58,13 @@ impl Client {
         println!("Player {}'s turn!", player.icon);
 
         let move_index = player.get_move();
-        let _ = self.connection.write_event(Event::MoveMade {
-            player_id,
-            move_index,
-        }).await;
+        let _ = self
+            .connection
+            .write_event(Event::MoveMade {
+                player_id,
+                move_index,
+            })
+            .await;
     }
 
     pub async fn play_game(&mut self) {
