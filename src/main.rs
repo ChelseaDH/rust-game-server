@@ -30,7 +30,7 @@ async fn main() {
 
         // Play the game
         let mut server = server::Server::new(player_one, player_two);
-        server.play_game().await;
+        server.init().await;
     });
 
     // Spawn a thread for a single player

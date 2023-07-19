@@ -1,13 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{client, connection::Connection};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 pub const PLAYER_ONE_ID: u8 = 1;
 pub const PLAYER_TWO_ID: u8 = 2;
 
 #[derive(PartialEq, Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum State {
-    InProgress,
+    PreInitialise,
+    PlayerTurn,
     GameOver(Outcome),
 }
 
@@ -23,6 +25,7 @@ pub struct Server {
     current_player: u8,
     board: Board,
     state: State,
+    channel: (Sender<ServerEvent>, Receiver<ServerEvent>),
 }
 
 impl Server {
@@ -32,34 +35,70 @@ impl Server {
             player_two,
             current_player: PLAYER_ONE_ID,
             board: Board::new(),
-            state: State::InProgress,
+            state: State::PreInitialise,
+            channel: mpsc::channel(1),
         }
     }
 
-    pub async fn play_game(&mut self) {
-        self.dispatch_state_changed_event(self.state).await;
+    pub async fn init(&mut self) {
+        self.channel.0.send(ServerEvent::BeginGame).await.unwrap();
+        self.run().await
+    }
 
-        while self.state == State::InProgress {
-            self.dispatch_player_turn_event().await;
+    async fn run(&mut self) {
+        loop {
+            match self.state {
+                State::GameOver(_) => break,
+                _ => {
+                    let event = tokio::select! {
+                        result = self.channel.1.recv() => IncomingEvent::Server(result.unwrap()),
+                        result = self.player_one.connection.read_event() => IncomingEvent::Client(result.unwrap()),
+                        result = self.player_two.connection.read_event() => IncomingEvent::Client(result.unwrap()),
+                        else => break,
+                    };
 
-            let received_event = self.read_event_from_current_player().await;
-            match self.handle_event(received_event) {
-                Ok(_) => (),
-                Err(e) => {
-                    self.dispatch_event_to_current_player(Event::ErrorOccurred(e))
-                        .await;
-                    continue;
+                    self.handle_incoming_event(event).await
                 }
             }
+        }
+    }
 
-            self.state = match self.board.determine_outcome() {
-                None => {
-                    self.swap_player();
-                    State::InProgress
+    async fn handle_incoming_event(&mut self, event: IncomingEvent) {
+        match (self.state, event) {
+            (State::PreInitialise, IncomingEvent::Server(ServerEvent::BeginGame)) => {
+                self.dispatch_board_updated_event().await;
+                self.dispatch_player_turn_event().await;
+
+                self.state = State::PlayerTurn;
+            }
+            (
+                State::PlayerTurn,
+                IncomingEvent::Client(client::Event::MoveMade {
+                    player_id,
+                    move_index,
+                }),
+            ) => {
+                if let Err(error) = self.handle_move_made_event(player_id, move_index) {
+                    self.dispatch_event_to_current_player(Event::ErrorOccurred(error))
+                        .await;
+                    self.dispatch_player_turn_event().await;
+                    return;
+                };
+
+                self.dispatch_board_updated_event().await;
+                match self.board.determine_outcome() {
+                    None => {
+                        self.swap_player();
+                        self.dispatch_player_turn_event().await
+                    }
+                    Some(outcome) => {
+                        self.state = State::GameOver(outcome);
+                        self.dispatch_event_to_all_players(Event::GameOver { outcome })
+                            .await;
+                    }
                 }
-                Some(o) => State::GameOver(o),
-            };
-            self.dispatch_state_changed_event(self.state).await;
+            }
+            _ => panic!("Invalid state for event"),
         }
     }
 
@@ -93,25 +132,14 @@ impl Server {
         };
     }
 
-    async fn read_event_from_current_player(&mut self) -> client::Event {
-        match self.current_player {
-            PLAYER_ONE_ID => self.player_one.connection.read_event().await.unwrap(),
-            PLAYER_TWO_ID => self.player_two.connection.read_event().await.unwrap(),
-            _ => panic!("Unexpected id provided"),
-        }
-    }
-
-    async fn dispatch_state_changed_event(&mut self, state: State) {
-        let cells_event_rep = self.board.cells.map(|cell| match cell.state {
+    async fn dispatch_board_updated_event(&mut self) {
+        let board_cells = self.board.cells.map(|cell| match cell.state {
             BoardCellState::Empty => None,
             BoardCellState::Occupied { player_id } => Some(player_id),
         });
 
-        self.dispatch_event_to_all_players(Event::StateChanged {
-            state,
-            board_cells: cells_event_rep,
-        })
-        .await;
+        self.dispatch_event_to_all_players(Event::BoardUpdated { board_cells })
+            .await;
     }
 
     async fn dispatch_player_turn_event(&mut self) {
@@ -119,30 +147,37 @@ impl Server {
             .await;
     }
 
-    fn handle_event(&mut self, event: client::Event) -> Result<(), Error> {
-        match event {
-            client::Event::MoveMade {
-                player_id,
-                move_index,
-            } => {
-                if player_id != self.current_player {
-                    return Err(Error::UnexpectedPlayer);
-                }
-
-                self.board.add_move(player_id, move_index)
-            }
+    fn handle_move_made_event(&mut self, player_id: u8, move_index: usize) -> Result<(), Error> {
+        if player_id != self.current_player {
+            return Err(Error::UnexpectedPlayer);
         }
+
+        self.board.add_move(player_id, move_index)
     }
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize)]
 pub enum Event {
-    StateChanged {
-        state: State,
+    GameOver {
+        outcome: Outcome,
+    },
+    BoardUpdated {
         board_cells: [Option<u8>; BOARD_SIZE],
     },
     PlayerTurn(u8),
     ErrorOccurred(Error),
+}
+
+#[derive(Debug, Deserialize)]
+enum ServerEvent {
+    BeginGame,
+    PlayerDisconnected,
+}
+
+#[derive(Deserialize)]
+enum IncomingEvent {
+    Server(ServerEvent),
+    Client(client::Event),
 }
 
 #[derive(Debug)]

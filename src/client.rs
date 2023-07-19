@@ -7,6 +7,7 @@ pub struct Client {
     player_one: Player,
     player_two: Player,
     connection: Connection,
+    running: bool,
 }
 
 impl Client {
@@ -15,23 +16,36 @@ impl Client {
             player_one: Player { icon: 'X' },
             player_two: Player { icon: 'O' },
             connection,
+            running: true,
+        }
+    }
+
+    pub async fn play_game(&mut self) {
+        while self.running {
+            match self.connection.read_event().await {
+                Ok(event) => self.handle_event(event).await,
+                Err(error) => {
+                    eprintln!("Error: {}\n", error);
+                    continue;
+                }
+            }
         }
     }
 
     pub async fn handle_event(&mut self, event: server::Event) {
         match event {
-            server::Event::StateChanged { state, board_cells } => {
-                self.print_board(board_cells);
-                match state {
-                    server::State::InProgress => (),
-                    server::State::GameOver(Outcome::Draw) => {
+            server::Event::BoardUpdated { board_cells } => self.print_board(board_cells),
+            server::Event::GameOver { outcome } => {
+                match outcome {
+                    Outcome::Draw => {
                         println!("Game over! There was a draw!")
                     }
-                    server::State::GameOver(Outcome::WinnerFound { player_id }) => println!(
+                    Outcome::WinnerFound { player_id } => println!(
                         "Game over! Player {} won!",
                         self.get_player_by_id(player_id).icon
                     ),
                 }
+                self.running = false
             }
             server::Event::PlayerTurn(id) => self.make_player_move(id).await,
             server::Event::ErrorOccurred(error) => self.handle_error(error),
@@ -65,18 +79,6 @@ impl Client {
                 move_index,
             })
             .await;
-    }
-
-    pub async fn play_game(&mut self) {
-        loop {
-            match self.connection.read_event().await {
-                Ok(event) => self.handle_event(event).await,
-                Err(error) => {
-                    eprintln!("Error: {}\n", error);
-                    continue;
-                }
-            }
-        }
     }
 
     fn handle_error(&self, error: server::Error) {
