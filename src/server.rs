@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{client, connection::Connection};
+use async_trait::async_trait;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 pub const PLAYER_ONE_ID: u8 = 1;
@@ -19,27 +20,132 @@ pub enum Outcome {
     WinnerFound { player_id: u8 },
 }
 
-pub struct Server {
+pub trait ConnectionType {}
+
+pub struct LocalConnection {
+    connection: Connection,
+}
+impl ConnectionType for LocalConnection {}
+
+pub struct OnlineConnection {
     player_one: Player,
     player_two: Player,
+}
+impl ConnectionType for OnlineConnection {}
+
+pub struct Server<T: ConnectionType> {
+    connection: T,
     current_player: u8,
     board: Board,
     state: State,
     channel: (Sender<ServerEvent>, Receiver<ServerEvent>),
 }
 
-impl Server {
-    pub fn new(player_one: Player, player_two: Player) -> Server {
+impl Server<LocalConnection> {
+    pub fn new(connection: Connection) -> Self {
         Server {
-            player_one,
-            player_two,
+            connection: LocalConnection { connection },
             current_player: PLAYER_ONE_ID,
             board: Board::new(),
             state: State::PreInitialise,
             channel: mpsc::channel(1),
         }
     }
+}
 
+impl Server<OnlineConnection> {
+    pub fn new(player_one: Player, player_two: Player) -> Self {
+        Server {
+            connection: OnlineConnection {
+                player_one,
+                player_two,
+            },
+            current_player: PLAYER_ONE_ID,
+            board: Board::new(),
+            state: State::PreInitialise,
+            channel: mpsc::channel(1),
+        }
+    }
+}
+
+#[async_trait]
+pub trait ServerGameMode {
+    async fn get_next_incoming_event(&mut self) -> Option<IncomingEvent>;
+    async fn dispatch_event_to_current_player(&mut self, event: Event);
+    async fn dispatch_event_to_all_players(&mut self, event: Event);
+}
+
+#[async_trait]
+impl ServerGameMode for Server<LocalConnection> {
+    async fn get_next_incoming_event(&mut self) -> Option<IncomingEvent> {
+        return tokio::select! {
+            result = self.channel.1.recv() => Some(IncomingEvent::Server(result.unwrap())),
+            result = self.connection.connection.read_event() => Some(IncomingEvent::Client(result.unwrap())),
+            else => None
+        };
+    }
+
+    async fn dispatch_event_to_current_player(&mut self, event: Event) {
+        self.connection.connection.write_event(event).await.unwrap()
+    }
+
+    async fn dispatch_event_to_all_players(&mut self, event: Event) {
+        self.connection.connection.write_event(event).await.unwrap()
+    }
+}
+
+#[async_trait]
+impl ServerGameMode for Server<OnlineConnection> {
+    async fn get_next_incoming_event(&mut self) -> Option<IncomingEvent> {
+        return tokio::select! {
+            result = self.channel.1.recv() => Some(IncomingEvent::Server(result.unwrap())),
+            result = self.connection.player_one.connection.read_event() => Some(IncomingEvent::Client(result.unwrap())),
+            result = self.connection.player_two.connection.read_event() => Some(IncomingEvent::Client(result.unwrap())),
+            else => None
+        };
+    }
+
+    async fn dispatch_event_to_current_player(&mut self, event: Event) {
+        match self.current_player {
+            PLAYER_ONE_ID => self
+                .connection
+                .player_one
+                .connection
+                .write_event(event)
+                .await
+                .unwrap(),
+            PLAYER_TWO_ID => self
+                .connection
+                .player_two
+                .connection
+                .write_event(event)
+                .await
+                .unwrap(),
+            _ => panic!("Unexpected id provided"),
+        };
+    }
+
+    async fn dispatch_event_to_all_players(&mut self, event: Event) {
+        let event_copy = event;
+        self.connection
+            .player_one
+            .connection
+            .write_event(event)
+            .await
+            .unwrap();
+        self.connection
+            .player_two
+            .connection
+            .write_event(event_copy)
+            .await
+            .unwrap();
+    }
+}
+
+impl<T: ConnectionType> Server<T>
+where
+    Self: ServerGameMode,
+{
     pub async fn init(&mut self) {
         self.channel.0.send(ServerEvent::BeginGame).await.unwrap();
         self.run().await
@@ -49,16 +155,10 @@ impl Server {
         loop {
             match self.state {
                 State::GameOver(_) => break,
-                _ => {
-                    let event = tokio::select! {
-                        result = self.channel.1.recv() => IncomingEvent::Server(result.unwrap()),
-                        result = self.player_one.connection.read_event() => IncomingEvent::Client(result.unwrap()),
-                        result = self.player_two.connection.read_event() => IncomingEvent::Client(result.unwrap()),
-                        else => break,
-                    };
-
-                    self.handle_incoming_event(event).await
-                }
+                _ => match self.get_next_incoming_event().await {
+                    Some(event) => self.handle_incoming_event(event).await,
+                    None => break,
+                },
             }
         }
     }
@@ -110,28 +210,6 @@ impl Server {
         }
     }
 
-    async fn dispatch_event_to_all_players(&mut self, event: Event) {
-        if self.player_one.connection.id == self.player_two.connection.id {
-            self.player_one.connection.write_event(event).await.unwrap();
-        } else {
-            let event_copy = event;
-            self.player_one.connection.write_event(event).await.unwrap();
-            self.player_two
-                .connection
-                .write_event(event_copy)
-                .await
-                .unwrap();
-        }
-    }
-
-    async fn dispatch_event_to_current_player(&mut self, event: Event) {
-        match self.current_player {
-            PLAYER_ONE_ID => self.player_one.connection.write_event(event).await.unwrap(),
-            PLAYER_TWO_ID => self.player_two.connection.write_event(event).await.unwrap(),
-            _ => panic!("Unexpected id provided"),
-        };
-    }
-
     async fn dispatch_board_updated_event(&mut self) {
         let board_cells = self.board.cells.map(|cell| match cell.state {
             BoardCellState::Empty => None,
@@ -169,13 +247,13 @@ pub enum Event {
 }
 
 #[derive(Debug, Deserialize)]
-enum ServerEvent {
+pub enum ServerEvent {
     BeginGame,
     PlayerDisconnected,
 }
 
 #[derive(Deserialize)]
-enum IncomingEvent {
+pub enum IncomingEvent {
     Server(ServerEvent),
     Client(client::Event),
 }

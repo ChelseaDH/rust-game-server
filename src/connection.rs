@@ -9,13 +9,12 @@ use tokio::net::TcpStream;
 
 #[derive(Debug)]
 pub struct Connection {
-    pub id: u8,
     stream: TcpStream,
 }
 
 impl Connection {
-    pub fn new(id: u8, stream: TcpStream) -> Connection {
-        Connection { id, stream }
+    pub fn new(stream: TcpStream) -> Connection {
+        Connection { stream }
     }
 
     pub async fn write_event<T: Serialize>(&mut self, event: T) -> Result<(), ReadWriteError> {
