@@ -1,11 +1,13 @@
 use std::net::Ipv4Addr;
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::server::{LocalConnection, OnlineConnection};
+use crate::lobby::Lobby;
+use crate::server::LocalConnection;
 use crate::{client::Client, connection::Connection};
 
 mod client;
 mod connection;
+mod lobby;
 mod server;
 
 const PORT: u16 = 22222;
@@ -51,28 +53,14 @@ async fn main() {
 
             // Spawn the server thread
             let server_handle = tokio::spawn(async move {
-                // Wait for a connection of player one
-                let (stream_one, _) = listener.accept().await.unwrap();
-
-                // Wait for a connection of player two
-                let (stream_two, _) = listener.accept().await.unwrap();
-
-                // Create connections for the players
-                let connection_one = Connection::new(stream_one);
-                let connection_two = Connection::new(stream_two);
-
-                // Game set up
-                let player_one = server::Player::new_player_one(connection_one);
-                let player_two = server::Player::new_player_two(connection_two);
-
-                // Play the game
-                let mut server = server::Server::<OnlineConnection>::new(player_one, player_two);
+                let mut lobby = Lobby::new(listener);
+                let mut server = lobby.set_up_online_server().await;
                 server.init().await;
             });
 
             // Set up client connection
-            let stream = TcpStream::connect(address).await.unwrap();
-            let mut client = Client::new(Connection::new(stream));
+            let connection = lobby::connect_to_game(address).await.unwrap();
+            let mut client = Client::new(connection);
             client.play_game().await;
 
             // Wait for server thread to finish
@@ -82,9 +70,13 @@ async fn main() {
             println!("Please enter the address of the game to join:");
             let address = read_string();
 
-            let stream = TcpStream::connect(address).await.unwrap();
-            let mut client = Client::new(Connection::new(stream));
-            client.play_game().await;
+            match lobby::connect_to_game(address).await {
+                Ok(connection) => {
+                    let mut client = Client::new(connection);
+                    client.play_game().await;
+                }
+                Err(_) => eprintln!("Error connecting to game. Aborting."),
+            }
         }
     }
 }

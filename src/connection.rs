@@ -56,6 +56,10 @@ impl Connection {
 
         Ok(())
     }
+
+    pub async fn shutdown(mut self) -> std::io::Result<()> {
+        self.stream.shutdown().await
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
