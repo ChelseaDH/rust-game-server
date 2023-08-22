@@ -166,8 +166,10 @@ where
     async fn handle_incoming_event(&mut self, event: IncomingEvent) {
         match (self.state, event) {
             (State::PreInitialise, IncomingEvent::Server(ServerEvent::BeginGame)) => {
+                self.dispatch_event_to_all_players(Event::GameStarted).await;
                 self.dispatch_board_updated_event().await;
-                self.dispatch_player_turn_event().await;
+                self.dispatch_player_turn_event(DispatchMode::AllPlayers)
+                    .await;
 
                 self.state = State::PlayerTurn;
             }
@@ -181,7 +183,8 @@ where
                 if let Err(error) = self.handle_move_made_event(player_id, move_index) {
                     self.dispatch_event_to_current_player(Event::ErrorOccurred(error))
                         .await;
-                    self.dispatch_player_turn_event().await;
+                    self.dispatch_player_turn_event(DispatchMode::CurrentPlayer)
+                        .await;
                     return;
                 };
 
@@ -189,7 +192,8 @@ where
                 match self.board.determine_outcome() {
                     None => {
                         self.swap_player();
-                        self.dispatch_player_turn_event().await
+                        self.dispatch_player_turn_event(DispatchMode::AllPlayers)
+                            .await
                     }
                     Some(outcome) => {
                         self.state = State::GameOver(outcome);
@@ -220,9 +224,13 @@ where
             .await;
     }
 
-    async fn dispatch_player_turn_event(&mut self) {
-        self.dispatch_event_to_current_player(Event::PlayerTurn(self.current_player))
-            .await;
+    async fn dispatch_player_turn_event(&mut self, dispatch_mode: DispatchMode) {
+        let event = Event::PlayerTurn(self.current_player);
+
+        match dispatch_mode {
+            DispatchMode::AllPlayers => self.dispatch_event_to_all_players(event).await,
+            DispatchMode::CurrentPlayer => self.dispatch_event_to_current_player(event).await,
+        }
     }
 
     fn handle_move_made_event(&mut self, player_id: u8, move_index: usize) -> Result<(), Error> {
@@ -232,6 +240,11 @@ where
 
         self.board.add_move(player_id, move_index)
     }
+}
+
+pub enum DispatchMode {
+    AllPlayers,
+    CurrentPlayer,
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize)]
@@ -244,6 +257,7 @@ pub enum Event {
     },
     PlayerTurn(u8),
     ErrorOccurred(Error),
+    GameStarted,
 }
 
 #[derive(Debug, Deserialize)]

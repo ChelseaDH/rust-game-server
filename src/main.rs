@@ -1,6 +1,7 @@
 use std::net::Ipv4Addr;
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::client::{LocalClient, OnlineClient};
 use crate::lobby::Lobby;
 use crate::server::LocalConnection;
 use crate::{client::Client, connection::Connection};
@@ -38,7 +39,7 @@ async fn main() {
 
             // Set up client connection
             let stream = TcpStream::connect(address).await.unwrap();
-            let mut client = Client::new(Connection::new(stream));
+            let mut client = Client::<LocalClient>::new(Connection::new(stream));
             client.play_game().await;
 
             // Wait for server thread to finish
@@ -60,7 +61,7 @@ async fn main() {
 
             // Set up client connection
             let connection = lobby::connect_to_game(address).await.unwrap();
-            let mut client = Client::new(connection);
+            let mut client = Client::<OnlineClient>::new(connection, server::PLAYER_ONE_ID);
             client.play_game().await;
 
             // Wait for server thread to finish
@@ -72,7 +73,7 @@ async fn main() {
 
             match lobby::connect_to_game(address).await {
                 Ok(connection) => {
-                    let mut client = Client::new(connection);
+                    let mut client = Client::<OnlineClient>::new(connection, server::PLAYER_TWO_ID);
                     client.play_game().await;
                 }
                 Err(_) => eprintln!("Error connecting to game. Aborting."),
