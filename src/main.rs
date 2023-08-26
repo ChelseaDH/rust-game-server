@@ -1,3 +1,4 @@
+use std::io;
 use std::net::Ipv4Addr;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -39,7 +40,11 @@ async fn main() {
 
             // Set up client connection
             let stream = TcpStream::connect(address).await.unwrap();
-            let mut client = Client::<LocalClient>::new(Connection::new(stream));
+            let mut client = Client::<LocalClient, io::BufReader<io::Stdin>, io::Stdout>::new(
+                Connection::new(stream),
+                io::BufReader::new(io::stdin()),
+                io::stdout(),
+            );
             client.play_game().await;
 
             // Wait for server thread to finish
@@ -61,7 +66,12 @@ async fn main() {
 
             // Set up client connection
             let connection = lobby::connect_to_game(address).await.unwrap();
-            let mut client = Client::<OnlineClient>::new(connection, server::PLAYER_ONE_ID);
+            let mut client = Client::<OnlineClient, io::BufReader<io::Stdin>, io::Stdout>::new(
+                connection,
+                server::PLAYER_ONE_ID,
+                io::BufReader::new(io::stdin()),
+                io::stdout(),
+            );
             client.play_game().await;
 
             // Wait for server thread to finish
@@ -73,7 +83,13 @@ async fn main() {
 
             match lobby::connect_to_game(address).await {
                 Ok(connection) => {
-                    let mut client = Client::<OnlineClient>::new(connection, server::PLAYER_TWO_ID);
+                    let mut client =
+                        Client::<OnlineClient, io::BufReader<io::Stdin>, io::Stdout>::new(
+                            connection,
+                            server::PLAYER_TWO_ID,
+                            io::BufReader::new(io::stdin()),
+                            io::stdout(),
+                        );
                     client.play_game().await;
                 }
                 Err(_) => eprintln!("Error connecting to game. Aborting."),
@@ -116,7 +132,7 @@ fn get_game_mode() -> GameMode {
 
 fn read_string() -> String {
     let mut input_text = String::new();
-    std::io::stdin()
+    io::stdin()
         .read_line(&mut input_text)
         .expect("Failed to read user input");
 
