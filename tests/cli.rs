@@ -1,6 +1,7 @@
 use std::process::Stdio;
 use std::time::Duration;
 
+use regex::Regex;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout, Command};
 
@@ -14,18 +15,18 @@ impl<I: AsyncWrite + Unpin, O: AsyncBufRead + Unpin> InputOutput<I, O> {
         InputOutput { stdin, stdout }
     }
 
-    async fn stream_contains(&mut self, string: &String) {
+    async fn stream_contains(&mut self, string: &String) -> String {
         let mut buf = String::new();
 
         loop {
             self.stdout.read_line(&mut buf).await.unwrap();
             if buf.contains(string) {
-                return;
+                return buf;
             }
         }
     }
 
-    async fn assert_stdout_contains(&mut self, string: &String) {
+    async fn assert_stdout_contains(&mut self, string: &String) -> String {
         tokio::time::timeout(Duration::from_secs(1), self.stream_contains(string))
             .await
             .expect(
@@ -153,7 +154,7 @@ async fn online_game_runs_until_win() {
     let mut player_one_io = get_io();
     let mut player_two_io = get_io();
 
-    // Player one selects to host the game
+    // Player one selects to host the game, specifying port 222
     player_one_io
         .assert_stdout_contains(&String::from(
             "Please select your game mode; local or online.",
@@ -164,6 +165,22 @@ async fn online_game_runs_until_win() {
         .assert_stdout_contains(&String::from("Do you want to host or join a game?"))
         .await;
     player_one_io.write_string("host\n").await;
+    player_one_io
+        .assert_stdout_contains(&String::from(
+            "Do you wish to specify a port to bind to (the default is 22222) y/N?",
+        ))
+        .await;
+    player_one_io.write_string("yes\n").await;
+    player_one_io
+        .assert_stdout_contains(&String::from("Please provide the port:"))
+        .await;
+    player_one_io.write_string("0\n").await;
+    // Grab the bound port for later connecting, ensuring the port is always available
+    let buf = player_one_io
+        .assert_stdout_contains(&String::from("People can join you on port"))
+        .await;
+    let re = Regex::new(r"People can join you on port\s*(\d*)\s*!").unwrap();
+    let port = re.captures(buf.as_str()).unwrap().get(1).unwrap().as_str();
 
     // Player two selects to join the game
     player_two_io
@@ -181,7 +198,9 @@ async fn online_game_runs_until_win() {
             "Please enter the address of the game to join:",
         ))
         .await;
-    player_two_io.write_string("0.0.0.0:22222\n").await;
+    player_two_io
+        .write_string(format!("0.0.0.0:{}\n", port).as_str())
+        .await;
 
     // Game begin event being received
     player_one_io

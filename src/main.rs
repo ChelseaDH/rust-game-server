@@ -12,7 +12,7 @@ mod connection;
 mod lobby;
 mod server;
 
-const PORT: u16 = 22222;
+const DEFAULT_PORT: u16 = 22222;
 
 #[tokio::main]
 async fn main() {
@@ -20,7 +20,7 @@ async fn main() {
 
     match get_game_mode() {
         GameMode::Local => {
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, PORT))
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, DEFAULT_PORT))
                 .await
                 .unwrap();
             let address = listener.local_addr().unwrap();
@@ -51,11 +51,32 @@ async fn main() {
             server_handle.await.unwrap();
         }
         GameMode::OnlineHost => {
-            let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT))
+            println!(
+                "Do you wish to specify a port to bind to (the default is {}) y/N?",
+                DEFAULT_PORT
+            );
+            let port = loop {
+                match read_string().as_str() {
+                    "" | "n" | "no" => break DEFAULT_PORT,
+                    "y" | "yes" => {
+                        println!("Please provide the port:");
+                        match read_string().parse::<u16>() {
+                            Err(_) => println!("That is not a valid number, try again."),
+                            Ok(port) => break port,
+                        }
+                    }
+                    _ => println!("That is not a valid option, please try again!"),
+                };
+            };
+
+            let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
                 .await
                 .unwrap();
             let address = listener.local_addr().unwrap();
-            println!("People can join you on port {}!", PORT);
+            // In the case that the supplied port was "0", a random port will be allocated
+            if port == 0 {
+                println!("People can join you on port {}!", address.port());
+            }
 
             // Spawn the server thread
             let server_handle = tokio::spawn(async move {
