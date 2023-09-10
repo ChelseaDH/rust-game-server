@@ -62,7 +62,7 @@ struct ConnectionRequest {
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     StreamError(#[from] std::io::Error),
-    ReadWriteError(#[from] connection::ReadWriteError),
+    WriteError(#[from] connection::WriteError),
 }
 
 impl fmt::Display for Error {

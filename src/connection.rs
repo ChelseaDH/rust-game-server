@@ -1,9 +1,5 @@
-use std::fmt;
-use std::fmt::Formatter;
-
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use thiserror::__private::DisplayAsDisplay;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -17,7 +13,7 @@ impl Connection {
         Connection { stream }
     }
 
-    pub async fn write_event<T: Serialize>(&mut self, event: T) -> Result<(), ReadWriteError> {
+    pub async fn write_event<T: Serialize>(&mut self, event: T) -> Result<(), WriteError> {
         let serialised = serde_json::to_string(&event)?;
         let len = serialised.len() as u16;
         let bytes = len.to_be_bytes();
@@ -29,7 +25,7 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn read_event<T: DeserializeOwned>(&mut self) -> Result<T, ReadWriteError> {
+    pub async fn read_event<T: DeserializeOwned>(&mut self) -> Result<T, ReadError> {
         // Read the length of the event
         let mut len_bytes = [0; 2];
         self.read_to_buffer(&mut len_bytes).await?;
@@ -42,7 +38,7 @@ impl Connection {
         Ok(serde_json::from_slice(&serialised)?)
     }
 
-    async fn read_to_buffer(&mut self, buffer: &mut [u8]) -> Result<(), ReadWriteError> {
+    async fn read_to_buffer(&mut self, buffer: &mut [u8]) -> Result<(), ReadError> {
         loop {
             match self.stream.read(buffer).await {
                 Ok(0) => continue,
@@ -57,19 +53,52 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn shutdown(mut self) -> std::io::Result<()> {
+    pub async fn shutdown(&mut self) -> std::io::Result<()> {
         self.stream.shutdown().await
     }
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum ReadWriteError {
-    Serde(#[from] serde_json::Error),
-    StreamReadWrite(#[from] std::io::Error),
+pub enum ReadError {
+    #[error("Failed to serialise message")]
+    Deserialise(#[from] serde_json::Error),
+    #[error("Failed to read from stream")]
+    Read(#[from] std::io::Error),
 }
 
-impl fmt::Display for ReadWriteError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_display())
+#[derive(thiserror::Error, Debug)]
+pub enum WriteError {
+    #[error("Failed to serialise Event")]
+    Serialise(#[from] serde_json::Error),
+    #[error("Failed to write to stream")]
+    Write(#[from] std::io::Error),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ErrorCategory {
+    Serialisation,
+    Deserialisation,
+    ReadWrite,
+}
+
+pub trait HasErrorCategory {
+    fn category(&self) -> ErrorCategory;
+}
+
+impl HasErrorCategory for ReadError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            ReadError::Deserialise(_) => ErrorCategory::Deserialisation,
+            ReadError::Read(_) => ErrorCategory::ReadWrite,
+        }
+    }
+}
+
+impl HasErrorCategory for WriteError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            WriteError::Serialise(_) => ErrorCategory::Serialisation,
+            WriteError::Write(_) => ErrorCategory::ReadWrite,
+        }
     }
 }

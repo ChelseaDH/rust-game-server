@@ -1,17 +1,23 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{client, connection::Connection};
+use crate::client;
+use crate::connection::{Connection, ErrorCategory, HasErrorCategory, ReadError, WriteError};
 use async_trait::async_trait;
+use tokio::join;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 pub const PLAYER_ONE_ID: u8 = 1;
 pub const PLAYER_TWO_ID: u8 = 2;
 
-#[derive(PartialEq, Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum State {
     PreInitialise,
     PlayerTurn,
     GameOver(Outcome),
+    Error {
+        category: ErrorCategory,
+        player_id: u8,
+    },
 }
 
 #[derive(PartialEq, Debug, Copy, Clone, Serialize, Deserialize)]
@@ -70,75 +76,100 @@ impl Server<OnlineConnection> {
 
 #[async_trait]
 pub trait ServerGameMode {
-    async fn get_next_incoming_event(&mut self) -> Option<IncomingEvent>;
-    async fn dispatch_event_to_current_player(&mut self, event: Event);
-    async fn dispatch_event_to_all_players(&mut self, event: Event);
+    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent, (ReadError, u8)>;
+    async fn dispatch_event_to_player(
+        &mut self,
+        event: Event,
+        player_id: u8,
+    ) -> Result<(), (WriteError, u8)>;
+    async fn dispatch_event_to_all_players(&mut self, event: Event)
+        -> Result<(), (WriteError, u8)>;
+    async fn shutdown_all_client_connections(&mut self);
 }
 
 #[async_trait]
 impl ServerGameMode for Server<LocalConnection> {
-    async fn get_next_incoming_event(&mut self) -> Option<IncomingEvent> {
+    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent, (ReadError, u8)> {
         return tokio::select! {
-            result = self.channel.1.recv() => Some(IncomingEvent::Server(result.unwrap())),
-            result = self.connection.connection.read_event() => Some(IncomingEvent::Client(result.unwrap())),
-            else => None
+            result = self.channel.1.recv() => Ok(IncomingEvent::Server(result.unwrap())),
+            result = self.connection.connection.read_event() => result.map_err(|e| (e, PLAYER_ONE_ID)).map(IncomingEvent::Client),
         };
     }
 
-    async fn dispatch_event_to_current_player(&mut self, event: Event) {
-        self.connection.connection.write_event(event).await.unwrap()
+    async fn dispatch_event_to_player(
+        &mut self,
+        event: Event,
+        _player_id: u8,
+    ) -> Result<(), (WriteError, u8)> {
+        self.connection
+            .connection
+            .write_event(event)
+            .await
+            .map_err(|e| (e, PLAYER_ONE_ID))
     }
 
-    async fn dispatch_event_to_all_players(&mut self, event: Event) {
-        self.connection.connection.write_event(event).await.unwrap()
+    async fn dispatch_event_to_all_players(
+        &mut self,
+        event: Event,
+    ) -> Result<(), (WriteError, u8)> {
+        self.dispatch_event_to_player(event, PLAYER_ONE_ID).await
+    }
+
+    async fn shutdown_all_client_connections(&mut self) {
+        let _ = self.connection.connection.shutdown().await;
     }
 }
 
 #[async_trait]
 impl ServerGameMode for Server<OnlineConnection> {
-    async fn get_next_incoming_event(&mut self) -> Option<IncomingEvent> {
+    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent, (ReadError, u8)> {
         return tokio::select! {
-            result = self.channel.1.recv() => Some(IncomingEvent::Server(result.unwrap())),
-            result = self.connection.player_one.connection.read_event() => Some(IncomingEvent::Client(result.unwrap())),
-            result = self.connection.player_two.connection.read_event() => Some(IncomingEvent::Client(result.unwrap())),
-            else => None
+            result = self.channel.1.recv() => Ok(IncomingEvent::Server(result.unwrap())),
+            result = self.connection.player_one.connection.read_event() => result.map_err(|e| (e, PLAYER_ONE_ID)).map(IncomingEvent::Client),
+            result = self.connection.player_two.connection.read_event() => result.map_err(|e| (e, PLAYER_TWO_ID)).map(IncomingEvent::Client),
         };
     }
 
-    async fn dispatch_event_to_current_player(&mut self, event: Event) {
-        match self.current_player {
-            PLAYER_ONE_ID => self
-                .connection
-                .player_one
-                .connection
-                .write_event(event)
-                .await
-                .unwrap(),
-            PLAYER_TWO_ID => self
-                .connection
-                .player_two
-                .connection
-                .write_event(event)
-                .await
-                .unwrap(),
+    async fn dispatch_event_to_player(
+        &mut self,
+        event: Event,
+        player_id: u8,
+    ) -> Result<(), (WriteError, u8)> {
+        match player_id {
+            PLAYER_ONE_ID => {
+                self.connection
+                    .player_one
+                    .connection
+                    .write_event(event)
+                    .await
+            }
+            PLAYER_TWO_ID => {
+                self.connection
+                    .player_two
+                    .connection
+                    .write_event(event)
+                    .await
+            }
             _ => panic!("Unexpected id provided"),
-        };
+        }
+        .map_err(|e| (e, player_id))
     }
 
-    async fn dispatch_event_to_all_players(&mut self, event: Event) {
+    async fn dispatch_event_to_all_players(
+        &mut self,
+        event: Event,
+    ) -> Result<(), (WriteError, u8)> {
         let event_copy = event;
-        self.connection
-            .player_one
-            .connection
-            .write_event(event)
+        self.dispatch_event_to_player(event, PLAYER_ONE_ID).await?;
+        self.dispatch_event_to_player(event_copy, PLAYER_TWO_ID)
             .await
-            .unwrap();
-        self.connection
-            .player_two
-            .connection
-            .write_event(event_copy)
-            .await
-            .unwrap();
+    }
+
+    async fn shutdown_all_client_connections(&mut self) {
+        let _ = join!(
+            self.connection.player_one.connection.shutdown(),
+            self.connection.player_two.connection.shutdown()
+        );
     }
 }
 
@@ -155,23 +186,47 @@ where
         loop {
             match self.state {
                 State::GameOver(_) => break,
+                State::Error {
+                    category: error_type,
+                    player_id,
+                } => {
+                    self.handle_error(error_type, player_id).await;
+                    break;
+                }
                 _ => match self.get_next_incoming_event().await {
-                    Some(event) => self.handle_incoming_event(event).await,
-                    None => break,
+                    Ok(event) => {
+                        if let Err((error, id)) = self.handle_incoming_event(event).await {
+                            self.state = State::Error {
+                                category: error.category(),
+                                player_id: id,
+                            }
+                        }
+                    }
+                    Err((error, id)) => {
+                        self.state = State::Error {
+                            category: error.category(),
+                            player_id: id,
+                        }
+                    }
                 },
             }
         }
     }
 
-    async fn handle_incoming_event(&mut self, event: IncomingEvent) {
+    async fn handle_incoming_event(
+        &mut self,
+        event: IncomingEvent,
+    ) -> Result<(), (WriteError, u8)> {
         match (self.state, event) {
             (State::PreInitialise, IncomingEvent::Server(ServerEvent::BeginGame)) => {
-                self.dispatch_event_to_all_players(Event::GameStarted).await;
-                self.dispatch_board_updated_event().await;
+                self.dispatch_event_to_all_players(Event::GameStarted)
+                    .await?;
+                self.dispatch_board_updated_event().await?;
                 self.dispatch_player_turn_event(DispatchMode::AllPlayers)
-                    .await;
+                    .await?;
 
                 self.state = State::PlayerTurn;
+                Ok(())
             }
             (
                 State::PlayerTurn,
@@ -181,14 +236,14 @@ where
                 }),
             ) => {
                 if let Err(error) = self.handle_move_made_event(player_id, move_index) {
-                    self.dispatch_event_to_current_player(Event::ErrorOccurred(error))
-                        .await;
+                    self.dispatch_event_to_player(Event::ErrorOccurred(error), self.current_player)
+                        .await?;
                     self.dispatch_player_turn_event(DispatchMode::CurrentPlayer)
-                        .await;
-                    return;
+                        .await?;
+                    return Ok(());
                 };
 
-                self.dispatch_board_updated_event().await;
+                self.dispatch_board_updated_event().await?;
                 match self.board.determine_outcome() {
                     None => {
                         self.swap_player();
@@ -198,7 +253,7 @@ where
                     Some(outcome) => {
                         self.state = State::GameOver(outcome);
                         self.dispatch_event_to_all_players(Event::GameOver { outcome })
-                            .await;
+                            .await
                     }
                 }
             }
@@ -206,30 +261,84 @@ where
         }
     }
 
+    /// Handles errors that can occur when reading/writing from/to a Client connection.
+    ///
+    /// Possible errors to be handled; IO, serialisation and deserialisation of `Event` objects.
+    ///
+    /// # Parameters
+    ///
+    /// - `error_category`: The category of error.
+    /// - `player_id`: The ID of the player associated with the error.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the error category is `ErrorCategory::Serialise`, indicating
+    /// an unexpected serialisation error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// handle_error(ErrorCategory::Deserialise, 1).await;
+    /// ```
+    async fn handle_error(&mut self, error_category: ErrorCategory, player_id: u8) {
+        match error_category {
+            ErrorCategory::Serialisation => {
+                panic!("Error occurred while attempting to serialise an event.")
+            }
+            ErrorCategory::Deserialisation => {
+                let _ = self
+                    .dispatch_event_to_player(
+                        Event::ErrorOccurred(Error::InvalidMessage),
+                        player_id,
+                    )
+                    .await;
+                let _ = self.dispatch_event_to_all_players(Event::Shutdown).await;
+                self.shutdown_all_client_connections().await;
+            }
+            ErrorCategory::ReadWrite => {
+                let alternative_player_id = self.get_alternative_player_id(player_id);
+                let _ = self
+                    .dispatch_event_to_player(Event::Shutdown, alternative_player_id)
+                    .await;
+                self.shutdown_all_client_connections().await;
+            }
+        }
+    }
+
     fn swap_player(&mut self) {
-        self.current_player = if self.current_player == PLAYER_ONE_ID {
+        self.current_player = self.get_alternative_player_id(self.current_player)
+    }
+
+    fn get_alternative_player_id(&mut self, player_id: u8) -> u8 {
+        if player_id == PLAYER_ONE_ID {
             PLAYER_TWO_ID
         } else {
             PLAYER_ONE_ID
         }
     }
 
-    async fn dispatch_board_updated_event(&mut self) {
+    async fn dispatch_board_updated_event(&mut self) -> Result<(), (WriteError, u8)> {
         let board_cells = self.board.cells.map(|cell| match cell.state {
             BoardCellState::Empty => None,
             BoardCellState::Occupied { player_id } => Some(player_id),
         });
 
         self.dispatch_event_to_all_players(Event::BoardUpdated { board_cells })
-            .await;
+            .await
     }
 
-    async fn dispatch_player_turn_event(&mut self, dispatch_mode: DispatchMode) {
+    async fn dispatch_player_turn_event(
+        &mut self,
+        dispatch_mode: DispatchMode,
+    ) -> Result<(), (WriteError, u8)> {
         let event = Event::PlayerTurn(self.current_player);
 
         match dispatch_mode {
             DispatchMode::AllPlayers => self.dispatch_event_to_all_players(event).await,
-            DispatchMode::CurrentPlayer => self.dispatch_event_to_current_player(event).await,
+            DispatchMode::CurrentPlayer => {
+                self.dispatch_event_to_player(event, self.current_player)
+                    .await
+            }
         }
     }
 
@@ -258,6 +367,7 @@ pub enum Event {
     PlayerTurn(u8),
     ErrorOccurred(Error),
     GameStarted,
+    Shutdown,
 }
 
 #[derive(Debug, Deserialize)]
@@ -434,24 +544,16 @@ impl Board {
     }
 }
 
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone, Serialize, Deserialize, thiserror::Error, Debug)]
 pub enum Error {
+    #[error("The input should be a number between 0 and {}.", BOARD_SIZE -1)]
     InvalidCellIndex,
+    #[error("This cell is already occupied.")]
     CellOccupied,
+    #[error("It's not your turn.")]
     UnexpectedPlayer,
-}
-
-impl Error {
-    pub fn to_user_message(self) -> String {
-        match self {
-            Error::InvalidCellIndex => format!(
-                "The input should be a number between 0 and {}, try again.",
-                BOARD_SIZE - 1
-            ),
-            Error::CellOccupied => "This cell is already occupied, try again.".to_string(),
-            Error::UnexpectedPlayer => "It's not your turn, try again.".to_string(),
-        }
-    }
+    #[error("Invalid message sent.")]
+    InvalidMessage,
 }
 
 #[cfg(test)]

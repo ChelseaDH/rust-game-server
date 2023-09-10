@@ -118,6 +118,7 @@ where
             server::Event::PlayerTurn(id) => self.handle_player_turn_event(id).await,
             server::Event::ErrorOccurred(error) => self.handle_error(error),
             server::Event::GameStarted => self.handle_game_started_event().await,
+            server::Event::Shutdown => self.handle_shutdown().await,
         }
     }
 
@@ -148,7 +149,18 @@ where
     }
 
     fn handle_error(&mut self, error: server::Error) {
-        writeln!(&mut self.output, "Error: {}", error.to_user_message()).unwrap();
+        writeln!(&mut self.output, "Error: {}", error).unwrap();
+    }
+
+    async fn handle_shutdown(&mut self) {
+        writeln!(
+            &mut self.output,
+            "An unrecoverable error has occurred, game terminating."
+        )
+        .unwrap();
+
+        self.running = false;
+        let _ = self.connection.shutdown().await;
     }
 
     fn print_board(&mut self, board_cells: [Option<u8>; server::BOARD_SIZE]) {
@@ -369,9 +381,19 @@ mod tests {
                 0: server::Error::CellOccupied,
             })
             .await;
+        assert_eq!(output, b"Error: This cell is already occupied.\n")
+    }
+
+    #[tokio::test]
+    async fn generic_client_handles_shutdown_event() {
+        let mut output = Vec::new();
+        let mut client = get_local_test_client(&[], &mut output).await;
+
+        client.handle_event(server::Event::Shutdown).await;
+        assert_eq!(client.running, false);
         assert_eq!(
             output,
-            b"Error: This cell is already occupied, try again.\n"
+            b"An unrecoverable error has occurred, game terminating.\n"
         )
     }
 
