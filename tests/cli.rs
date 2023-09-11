@@ -294,14 +294,13 @@ async fn online_game_handles_client_disconnection() {
 
     // Player one makes a move
     player_one_io
-        .assert_player_move(
-            "It's your turn!",
-            1,
-            [" ", "X", " ", " ", " ", " ", " ", " ", " "],
-        )
+        .assert_stdout_contains(&String::from(
+            "Input a number between 0 and 8 to make your move:",
+        ))
         .await;
+    player_one_io.stdin.write_all(&[49, b'\n']).await.unwrap();
 
-    // Player one receives Shutdown event
+    // Player one shuts down
     player_one_io
         .assert_stdout_contains(&String::from(
             "An unrecoverable error has occurred, game terminating.",

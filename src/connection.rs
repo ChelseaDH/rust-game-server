@@ -28,29 +28,17 @@ impl Connection {
     pub async fn read_event<T: DeserializeOwned>(&mut self) -> Result<T, ReadError> {
         // Read the length of the event
         let mut len_bytes = [0; 2];
-        self.read_to_buffer(&mut len_bytes).await?;
+        self.stream.read_exact(&mut len_bytes).await?;
         let len = u16::from_be_bytes(len_bytes);
+        if len > 250 {
+            return Err(ReadError::InvalidMessageLength);
+        }
 
         // Read the event
         let mut serialised = vec![0; len as usize];
-        self.read_to_buffer(&mut serialised).await?;
+        self.stream.read_exact(&mut serialised).await?;
 
         Ok(serde_json::from_slice(&serialised)?)
-    }
-
-    async fn read_to_buffer(&mut self, buffer: &mut [u8]) -> Result<(), ReadError> {
-        loop {
-            match self.stream.read(buffer).await {
-                Ok(0) => continue,
-                Ok(_) => break,
-                Err(_) => {
-                    eprintln!("Error reading from socket");
-                    continue;
-                }
-            }
-        }
-
-        Ok(())
     }
 
     pub async fn shutdown(&mut self) -> std::io::Result<()> {
@@ -64,6 +52,8 @@ pub enum ReadError {
     Deserialise(#[from] serde_json::Error),
     #[error("Failed to read from stream")]
     Read(#[from] std::io::Error),
+    #[error("Received length parameter exceeds expected bounds")]
+    InvalidMessageLength,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -79,6 +69,7 @@ pub enum ErrorCategory {
     Serialisation,
     Deserialisation,
     ReadWrite,
+    InvalidParameters,
 }
 
 pub trait HasErrorCategory {
@@ -90,6 +81,7 @@ impl HasErrorCategory for ReadError {
         match self {
             ReadError::Deserialise(_) => ErrorCategory::Deserialisation,
             ReadError::Read(_) => ErrorCategory::ReadWrite,
+            ReadError::InvalidMessageLength => ErrorCategory::InvalidParameters,
         }
     }
 }

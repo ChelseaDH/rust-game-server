@@ -263,7 +263,8 @@ where
 
     /// Handles errors that can occur when reading/writing from/to a Client connection.
     ///
-    /// Possible errors to be handled; IO, serialisation and deserialisation of `Event` objects.
+    /// Possible errors to be handled; IO, invalid parameters, and serialisation and deserialisation
+    /// of `Event` objects.
     ///
     /// # Parameters
     ///
@@ -285,7 +286,7 @@ where
             ErrorCategory::Serialisation => {
                 panic!("Error occurred while attempting to serialise an event.")
             }
-            ErrorCategory::Deserialisation => {
+            ErrorCategory::Deserialisation | ErrorCategory::InvalidParameters => {
                 let _ = self
                     .dispatch_event_to_player(
                         Event::ErrorOccurred(Error::InvalidMessage),

@@ -91,10 +91,7 @@ where
         while self.running {
             match self.connection.read_event().await {
                 Ok(event) => self.handle_event(event).await,
-                Err(error) => {
-                    writeln!(&mut self.output, "An error occurred: {}", error).unwrap();
-                    continue;
-                }
+                Err(_) => self.handle_shutdown().await,
             }
         }
     }
