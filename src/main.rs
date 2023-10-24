@@ -5,12 +5,15 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::client::{LocalClient, OnlineClient};
 use crate::lobby::Lobby;
 use crate::server::LocalConnection;
+use crate::tic_tac_toe::TicTacToeServer;
 use crate::{client::Client, connection::Connection};
 
 mod client;
 mod connection;
+mod game;
 mod lobby;
 mod server;
+mod tic_tac_toe;
 
 const DEFAULT_PORT: u16 = 22222;
 
@@ -34,7 +37,12 @@ async fn main() {
                 let connection = Connection::new(stream_one);
 
                 // Play the game
-                let mut server = server::Server::<LocalConnection>::new(connection);
+                let mut server = server::Server::<
+                    LocalConnection,
+                    TicTacToeServer,
+                    tic_tac_toe::Event,
+                    client::Event,
+                >::new_tic_tac_toe(connection);
                 server.init().await;
             });
 

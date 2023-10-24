@@ -2,8 +2,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::io;
 
-use crate::server::Outcome;
-use crate::{connection::Connection, server};
+use crate::connection::Connection;
+use crate::server::{self};
+use crate::tic_tac_toe;
+use crate::tic_tac_toe::Outcome;
 
 pub trait ClientType {}
 
@@ -96,26 +98,12 @@ where
         }
     }
 
-    pub async fn handle_event(&mut self, event: server::Event) {
+    pub async fn handle_event(&mut self, event: server::OutgoingEvent<tic_tac_toe::Event>) {
         match event {
-            server::Event::BoardUpdated { board_cells } => self.print_board(board_cells),
-            server::Event::GameOver { outcome } => {
-                match outcome {
-                    Outcome::Draw => {
-                        writeln!(&mut self.output, "Game over! There was a draw!").unwrap();
-                    }
-                    Outcome::WinnerFound { player_id } => {
-                        let player_icon = self.get_player_icon_by_id(player_id);
-                        writeln!(&mut self.output, "Game over! Player {} won!", player_icon)
-                            .unwrap()
-                    }
-                }
-                self.running = false
-            }
-            server::Event::PlayerTurn(id) => self.handle_player_turn_event(id).await,
-            server::Event::ErrorOccurred(error) => self.handle_error(error),
-            server::Event::GameStarted => self.handle_game_started_event().await,
-            server::Event::Shutdown => self.handle_shutdown().await,
+            server::OutgoingEvent::ErrorOccurred(error) => self.handle_error(error),
+            server::OutgoingEvent::GameStarted => self.handle_game_started_event().await,
+            server::OutgoingEvent::Shutdown => self.handle_shutdown().await,
+            server::OutgoingEvent::Game { event } => self.handle_game_event(event).await,
         }
     }
 
@@ -160,7 +148,32 @@ where
         let _ = self.connection.shutdown().await;
     }
 
-    fn print_board(&mut self, board_cells: [Option<u8>; server::BOARD_SIZE]) {
+    async fn handle_game_event(&mut self, event: tic_tac_toe::Event) {
+        match event {
+            tic_tac_toe::Event::GameOver { outcome } => {
+                match outcome {
+                    Outcome::Draw => {
+                        writeln!(&mut self.output, "Game over! There was a draw!").unwrap();
+                    }
+                    Outcome::WinnerFound { player_id } => {
+                        let player_icon = self.get_player_icon_by_id(player_id);
+                        writeln!(&mut self.output, "Game over! Player {} won!", player_icon)
+                            .unwrap()
+                    }
+                }
+                self.running = false
+            }
+            tic_tac_toe::Event::BoardUpdated { board_cells } => self.print_board(board_cells),
+            tic_tac_toe::Event::PlayerTurn { player_id } => {
+                self.handle_player_turn_event(player_id).await
+            }
+            tic_tac_toe::Event::ErrorOccurred { error } => {
+                writeln!(&mut self.output, "Error: {}", error).unwrap()
+            }
+        }
+    }
+
+    fn print_board(&mut self, board_cells: [Option<u8>; tic_tac_toe::BOARD_SIZE]) {
         let cell_icons = board_cells.map(|x| self.get_optional_player_icon_by_id(x));
 
         writeln!(&mut self.output, "_________").unwrap();
@@ -197,7 +210,7 @@ fn get_move(mut input: impl io::BufRead, mut output: impl io::Write) -> usize {
         writeln!(
             output,
             "Input a number between 0 and {} to make your move:",
-            server::BOARD_SIZE - 1
+            tic_tac_toe::BOARD_SIZE - 1
         )
         .unwrap();
 
@@ -318,7 +331,9 @@ mod tests {
         ];
 
         client
-            .handle_event(server::Event::BoardUpdated { board_cells })
+            .handle_event(server::OutgoingEvent::Game {
+                event: tic_tac_toe::Event::BoardUpdated { board_cells },
+            })
             .await;
         assert_eq!(
             output,
@@ -332,8 +347,10 @@ mod tests {
         let mut client = get_local_test_client(&[], &mut output).await;
 
         client
-            .handle_event(server::Event::GameOver {
-                outcome: Outcome::Draw,
+            .handle_event(server::OutgoingEvent::Game {
+                event: tic_tac_toe::Event::GameOver {
+                    outcome: Outcome::Draw,
+                },
             })
             .await;
         assert_eq!(client.running, false);
@@ -346,8 +363,10 @@ mod tests {
         let mut client = get_local_test_client(&[], &mut output).await;
 
         client
-            .handle_event(server::Event::GameOver {
-                outcome: Outcome::WinnerFound { player_id: 1 },
+            .handle_event(server::OutgoingEvent::Game {
+                event: tic_tac_toe::Event::GameOver {
+                    outcome: Outcome::WinnerFound { player_id: 1 },
+                },
             })
             .await;
         assert_eq!(client.running, false);
@@ -360,8 +379,10 @@ mod tests {
         let mut client = get_local_test_client(&[], &mut output).await;
 
         client
-            .handle_event(server::Event::GameOver {
-                outcome: Outcome::WinnerFound { player_id: 2 },
+            .handle_event(server::OutgoingEvent::Game {
+                event: tic_tac_toe::Event::GameOver {
+                    outcome: Outcome::WinnerFound { player_id: 2 },
+                },
             })
             .await;
         assert_eq!(client.running, false);
@@ -374,8 +395,10 @@ mod tests {
         let mut client = get_local_test_client(&[], &mut output).await;
 
         client
-            .handle_event(server::Event::ErrorOccurred {
-                0: server::Error::CellOccupied,
+            .handle_event(server::OutgoingEvent::Game {
+                event: tic_tac_toe::Event::ErrorOccurred {
+                    error: tic_tac_toe::Error::CellOccupied,
+                },
             })
             .await;
         assert_eq!(output, b"Error: This cell is already occupied.\n")
@@ -386,7 +409,7 @@ mod tests {
         let mut output = Vec::new();
         let mut client = get_local_test_client(&[], &mut output).await;
 
-        client.handle_event(server::Event::Shutdown).await;
+        client.handle_event(server::OutgoingEvent::Shutdown).await;
         assert_eq!(client.running, false);
         assert_eq!(
             output,
