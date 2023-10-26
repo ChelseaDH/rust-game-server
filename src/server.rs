@@ -5,9 +5,8 @@ use std::marker::PhantomData;
 use tokio::join;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-use crate::client;
 use crate::connection::{Connection, ErrorCategory, HasErrorCategory, ReadError, WriteError};
-use crate::game::{GameEvent, GameServer};
+use crate::game::{GameServer, GameServerEvent};
 pub use crate::server::player::{get_alternative_player_id, Player, PLAYER_ONE_ID, PLAYER_TWO_ID};
 use crate::tic_tac_toe::{self, TicTacToeServer};
 
@@ -36,22 +35,25 @@ pub enum ServerEvent {
     PlayerDisconnected,
 }
 
-#[derive(Deserialize)]
-pub enum IncomingEvent<GE>
+pub enum IncomingEvent<GE, CE>
 where
     GE: Serialize + Send + Copy,
+    CE: DeserializeOwned,
 {
     Server(ServerEvent),
-    Client(client::Event),
-    Game(GameEvent<GE>),
+    Game(GameServerEvent<GE>),
+    Client(CE),
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize)]
-pub enum OutgoingEvent<E: Serialize + Send + Copy> {
+pub enum OutgoingEvent<GE>
+where
+    GE: Send,
+{
     ErrorOccurred(Error),
     GameStarted,
     Shutdown,
-    Game { event: E },
+    Game { event: GE },
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, thiserror::Error, Debug)]
@@ -86,7 +88,7 @@ where
     client_connection: C,
     channel: (Sender<ServerEvent>, Receiver<ServerEvent>),
     game: G,
-    game_receiver: Receiver<GameEvent<GE>>,
+    game_receiver: Receiver<GameServerEvent<GE>>,
     game_client_event_type: PhantomData<CE>,
 }
 
@@ -98,7 +100,8 @@ where
 {
     pub fn new_tic_tac_toe(
         connection: Connection,
-    ) -> Server<LocalConnection, TicTacToeServer, tic_tac_toe::Event, client::Event> {
+    ) -> Server<LocalConnection, TicTacToeServer, tic_tac_toe::ServerEvent, tic_tac_toe::ClientEvent>
+    {
         let (game_sender, game_receiver) = mpsc::channel(10);
 
         Server {
@@ -121,7 +124,8 @@ where
     pub fn new_tic_tac_toe(
         player_one: Player,
         player_two: Player,
-    ) -> Server<OnlineConnection, TicTacToeServer, tic_tac_toe::Event, client::Event> {
+    ) -> Server<OnlineConnection, TicTacToeServer, tic_tac_toe::ServerEvent, tic_tac_toe::ClientEvent>
+    {
         let (game_sender, game_receiver) = mpsc::channel(10);
 
         Server {
@@ -139,8 +143,12 @@ where
 }
 
 #[async_trait]
-pub trait ServerGameMode<GE: Serialize + Send + Copy> {
-    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE>, (ReadError, u8)>;
+pub trait ServerGameMode<GE, CE>
+where
+    GE: Serialize + Send + Copy,
+    CE: DeserializeOwned,
+{
+    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE, CE>, (ReadError, u8)>;
     async fn dispatch_event_to_player(
         &mut self,
         event: OutgoingEvent<GE>,
@@ -154,13 +162,13 @@ pub trait ServerGameMode<GE: Serialize + Send + Copy> {
 }
 
 #[async_trait]
-impl<G, GE, CE> ServerGameMode<GE> for Server<LocalConnection, G, GE, CE>
+impl<G, GE, CE> ServerGameMode<GE, CE> for Server<LocalConnection, G, GE, CE>
 where
     G: GameServer<CE> + Send,
     GE: Serialize + Send + Copy,
     CE: DeserializeOwned + Send,
 {
-    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE>, (ReadError, u8)> {
+    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE, CE>, (ReadError, u8)> {
         return tokio::select! {
             result = self.channel.1.recv() => Ok(IncomingEvent::Server(result.unwrap())),
             result = self.game_receiver.recv() => Ok(IncomingEvent::Game(result.unwrap())),
@@ -193,13 +201,13 @@ where
 }
 
 #[async_trait]
-impl<G, GE, CE> ServerGameMode<GE> for Server<OnlineConnection, G, GE, CE>
+impl<G, GE, CE> ServerGameMode<GE, CE> for Server<OnlineConnection, G, GE, CE>
 where
     G: GameServer<CE> + Send,
     GE: Serialize + Send + Copy,
     CE: DeserializeOwned + Send,
 {
-    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE>, (ReadError, u8)> {
+    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE, CE>, (ReadError, u8)> {
         return tokio::select! {
             result = self.channel.1.recv() => Ok(IncomingEvent::Server(result.unwrap())),
             result = self.game_receiver.recv() => Ok(IncomingEvent::Game(result.unwrap())),
@@ -251,12 +259,13 @@ where
     }
 }
 
-impl<C, G, GE> Server<C, G, GE, client::Event>
+impl<C, G, GE, CE> Server<C, G, GE, CE>
 where
     C: ClientConnectionType,
-    G: GameServer<client::Event> + Send,
+    G: GameServer<CE> + Send,
     GE: Serialize + Send + Copy,
-    Self: ServerGameMode<GE>,
+    CE: DeserializeOwned,
+    Self: ServerGameMode<GE, CE>,
 {
     pub async fn init(&mut self) {
         self.channel.0.send(ServerEvent::BeginGame).await.unwrap();
@@ -296,7 +305,7 @@ where
 
     async fn handle_incoming_event(
         &mut self,
-        event: IncomingEvent<GE>,
+        event: IncomingEvent<GE, CE>,
     ) -> Result<(), (WriteError, u8)> {
         match (self.state, event) {
             (State::PreInitialise, IncomingEvent::Server(ServerEvent::BeginGame)) => {
@@ -307,30 +316,19 @@ where
                 self.state = State::InProgress;
                 Ok(())
             }
-            (
-                State::InProgress,
-                IncomingEvent::Client(client::Event::MoveMade {
-                    player_id,
-                    move_index,
-                }),
-            ) => {
-                self.game
-                    .handle_event(client::Event::MoveMade {
-                        player_id,
-                        move_index,
-                    })
-                    .await;
+            (State::InProgress, IncomingEvent::Client(event)) => {
+                self.game.handle_event(event).await;
 
                 Ok(())
             }
             (
                 State::InProgress,
-                IncomingEvent::Game(GameEvent::DispatchToClient {
+                IncomingEvent::Game(GameServerEvent::DispatchToClient {
                     dispatch_mode,
                     event,
                 }),
             ) => self.dispatch_game_event(dispatch_mode, event).await,
-            (State::InProgress, IncomingEvent::Game(GameEvent::GameOver)) => {
+            (State::InProgress, IncomingEvent::Game(GameServerEvent::GameOver)) => {
                 self.state = State::GameOver;
 
                 Ok(())

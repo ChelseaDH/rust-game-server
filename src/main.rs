@@ -5,7 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::client::{LocalClient, OnlineClient};
 use crate::lobby::Lobby;
 use crate::server::LocalConnection;
-use crate::tic_tac_toe::TicTacToeServer;
+use crate::tic_tac_toe::{TicTacToeClient, TicTacToeServer};
 use crate::{client::Client, connection::Connection};
 
 mod client;
@@ -40,15 +40,20 @@ async fn main() {
                 let mut server = server::Server::<
                     LocalConnection,
                     TicTacToeServer,
-                    tic_tac_toe::Event,
-                    client::Event,
+                    tic_tac_toe::ServerEvent,
+                    tic_tac_toe::ClientEvent,
                 >::new_tic_tac_toe(connection);
                 server.init().await;
             });
 
             // Set up client connection
             let stream = TcpStream::connect(address).await.unwrap();
-            let mut client = Client::<LocalClient, io::BufReader<io::Stdin>, io::Stdout>::new(
+            let mut client = Client::<
+                io::Stdout,
+                tic_tac_toe::ClientEvent,
+                TicTacToeClient<io::BufReader<io::Stdin>, io::Stdout, LocalClient>,
+                tic_tac_toe::ServerEvent,
+            >::new_local_tic_tac_toe(
                 Connection::new(stream),
                 io::BufReader::new(io::stdin()),
                 io::stdout(),
@@ -95,7 +100,12 @@ async fn main() {
 
             // Set up client connection
             let connection = lobby::connect_to_game(address).await.unwrap();
-            let mut client = Client::<OnlineClient, io::BufReader<io::Stdin>, io::Stdout>::new(
+            let mut client = Client::<
+                io::Stdout,
+                tic_tac_toe::ClientEvent,
+                TicTacToeClient<io::BufReader<io::Stdin>, io::Stdout, OnlineClient>,
+                tic_tac_toe::ServerEvent,
+            >::new_online_tic_tac_toe(
                 connection,
                 server::PLAYER_ONE_ID,
                 io::BufReader::new(io::stdin()),
@@ -112,13 +122,17 @@ async fn main() {
 
             match lobby::connect_to_game(address).await {
                 Ok(connection) => {
-                    let mut client =
-                        Client::<OnlineClient, io::BufReader<io::Stdin>, io::Stdout>::new(
-                            connection,
-                            server::PLAYER_TWO_ID,
-                            io::BufReader::new(io::stdin()),
-                            io::stdout(),
-                        );
+                    let mut client = Client::<
+                        io::Stdout,
+                        tic_tac_toe::ClientEvent,
+                        TicTacToeClient<io::BufReader<io::Stdin>, io::Stdout, OnlineClient>,
+                        tic_tac_toe::ServerEvent,
+                    >::new_online_tic_tac_toe(
+                        connection,
+                        server::PLAYER_TWO_ID,
+                        io::BufReader::new(io::stdin()),
+                        io::stdout(),
+                    );
                     client.play_game().await;
                 }
                 Err(_) => eprintln!("Error connecting to game. Aborting."),

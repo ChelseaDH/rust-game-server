@@ -269,8 +269,6 @@ async fn online_game_runs_until_win() {
 
 #[tokio::test]
 async fn online_game_handles_client_disconnection() {
-    env_logger::builder().is_test(true).try_init().unwrap();
-
     // Set up command to run the program
     let (mut player_one_io, _) = get_io();
     let (mut player_two_io, mut player_two_process) = get_io();

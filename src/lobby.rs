@@ -1,7 +1,7 @@
 use crate::connection::Connection;
 use crate::server::{OnlineConnection, Player, Server};
 use crate::tic_tac_toe::TicTacToeServer;
-use crate::{client, connection, tic_tac_toe};
+use crate::{connection, tic_tac_toe};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Formatter};
 use thiserror::__private::DisplayAsDisplay;
@@ -20,16 +20,20 @@ impl Lobby {
 
     pub async fn set_up_online_server(
         &mut self,
-    ) -> Server<OnlineConnection, TicTacToeServer, tic_tac_toe::Event, client::Event> {
+    ) -> Server<OnlineConnection, TicTacToeServer, tic_tac_toe::ServerEvent, tic_tac_toe::ClientEvent>
+    {
         let connection_one = self.get_connection().await;
         let connection_two = self.get_connection().await;
 
         let player_one = Player::new_player_one(connection_one);
         let player_two = Player::new_player_two(connection_two);
 
-        Server::<OnlineConnection, TicTacToeServer, tic_tac_toe::Event, client::Event>::new_tic_tac_toe(
-            player_one, player_two,
-        )
+        Server::<
+            OnlineConnection,
+            TicTacToeServer,
+            tic_tac_toe::ServerEvent,
+            tic_tac_toe::ClientEvent,
+        >::new_tic_tac_toe(player_one, player_two)
     }
 
     async fn get_connection(&mut self) -> Connection {
@@ -79,8 +83,8 @@ impl fmt::Display for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client;
     use crate::server::{IncomingEvent, ServerGameMode};
+    use crate::tic_tac_toe::ClientEvent;
     use std::net::Ipv4Addr;
 
     #[derive(Serialize, Deserialize)]
@@ -103,7 +107,7 @@ mod tests {
             // It's not possible to predict the order that the messages will be received in, so we conditionally assert
             for _i in 0..1 {
                 match server.get_next_incoming_event().await.unwrap() {
-                    IncomingEvent::Client(client::Event::MoveMade {
+                    IncomingEvent::Client(ClientEvent::MoveMade {
                         player_id,
                         move_index,
                     }) => {
@@ -126,7 +130,7 @@ mod tests {
             .await
             .unwrap();
         connection_one
-            .write_event(client::Event::MoveMade {
+            .write_event(ClientEvent::MoveMade {
                 player_id: 1,
                 move_index: 5,
             })
@@ -141,7 +145,7 @@ mod tests {
             .await
             .unwrap();
         bogus_connection
-            .write_event(client::Event::MoveMade {
+            .write_event(ClientEvent::MoveMade {
                 player_id: 2,
                 move_index: 2,
             })
@@ -156,7 +160,7 @@ mod tests {
             .await
             .unwrap();
         connection_two
-            .write_event(client::Event::MoveMade {
+            .write_event(ClientEvent::MoveMade {
                 player_id: 2,
                 move_index: 8,
             })
