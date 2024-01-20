@@ -24,42 +24,9 @@ pub enum State {
 }
 
 #[derive(Debug, Deserialize)]
-pub enum DispatchMode {
-    AllPlayers,
-    SinglePlayer { player_id: u8 },
-}
-
-#[derive(Debug, Deserialize)]
 pub enum ServerEvent {
     BeginGame,
     PlayerDisconnected,
-}
-
-pub enum IncomingEvent<GE, CE>
-where
-    GE: Serialize + Send + Copy,
-    CE: DeserializeOwned,
-{
-    Server(ServerEvent),
-    Game(GameServerEvent<GE>),
-    Client(CE),
-}
-
-#[derive(Copy, Clone, Serialize, Deserialize)]
-pub enum OutgoingEvent<GE>
-where
-    GE: Send,
-{
-    ErrorOccurred(Error),
-    GameStarted,
-    Shutdown,
-    Game { event: GE },
-}
-
-#[derive(Copy, Clone, Serialize, Deserialize, thiserror::Error, Debug)]
-pub enum Error {
-    #[error("Invalid message sent.")]
-    InvalidMessage,
 }
 
 pub trait ClientConnectionType {}
@@ -81,8 +48,8 @@ pub struct Server<C, G, GE, CE>
 where
     C: ClientConnectionType,
     G: GameServer<CE> + Send,
-    GE: Serialize + Send + Copy,
-    CE: DeserializeOwned,
+    GE: Serialize + DeserializeOwned + Send + Copy,
+    CE: Serialize + DeserializeOwned,
 {
     state: State,
     client_connection: C,
@@ -95,8 +62,8 @@ where
 impl<G, GE, CE> Server<LocalConnection, G, GE, CE>
 where
     G: GameServer<CE> + Send,
-    GE: Serialize + Send + Copy,
-    CE: DeserializeOwned,
+    GE: Serialize + DeserializeOwned + Send + Copy,
+    CE: Serialize + DeserializeOwned,
 {
     pub fn new_tic_tac_toe(
         connection: Connection,
@@ -118,8 +85,8 @@ where
 impl<G, GE, CE> Server<OnlineConnection, G, GE, CE>
 where
     G: GameServer<CE> + Send,
-    GE: Serialize + Send + Copy,
-    CE: DeserializeOwned,
+    GE: Serialize + DeserializeOwned + Send + Copy,
+    CE: Serialize + DeserializeOwned,
 {
     pub fn new_tic_tac_toe(
         player_one: Player,
@@ -142,11 +109,35 @@ where
     }
 }
 
+pub enum IncomingEvent<GE, CE>
+where
+    GE: Serialize + DeserializeOwned,
+    CE: Serialize + DeserializeOwned,
+{
+    Server(ServerEvent),
+    Game(GameServerEvent<GE>),
+    Client(CE),
+}
+
+#[derive(Copy, Clone, Serialize, Deserialize)]
+pub enum OutgoingEvent<GE> {
+    ErrorOccurred(Error),
+    GameStarted,
+    Shutdown,
+    Game { event: GE },
+}
+
+#[derive(Copy, Clone, Serialize, Deserialize, thiserror::Error, Debug)]
+pub enum Error {
+    #[error("Invalid message sent.")]
+    InvalidMessage,
+}
+
 #[async_trait]
 pub trait ServerGameMode<GE, CE>
 where
-    GE: Serialize + Send + Copy,
-    CE: DeserializeOwned,
+    GE: Serialize + DeserializeOwned + Send + Copy,
+    CE: Serialize + DeserializeOwned,
 {
     async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE, CE>, (ReadError, u8)>;
     async fn dispatch_event_to_player(
@@ -165,8 +156,8 @@ where
 impl<G, GE, CE> ServerGameMode<GE, CE> for Server<LocalConnection, G, GE, CE>
 where
     G: GameServer<CE> + Send,
-    GE: Serialize + Send + Copy,
-    CE: DeserializeOwned + Send,
+    GE: Serialize + DeserializeOwned + Send + Copy,
+    CE: Serialize + DeserializeOwned + Send,
 {
     async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE, CE>, (ReadError, u8)> {
         return tokio::select! {
@@ -204,8 +195,8 @@ where
 impl<G, GE, CE> ServerGameMode<GE, CE> for Server<OnlineConnection, G, GE, CE>
 where
     G: GameServer<CE> + Send,
-    GE: Serialize + Send + Copy,
-    CE: DeserializeOwned + Send,
+    GE: Serialize + DeserializeOwned + Send + Copy,
+    CE: Serialize + DeserializeOwned + Send,
 {
     async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE, CE>, (ReadError, u8)> {
         return tokio::select! {
@@ -263,8 +254,8 @@ impl<C, G, GE, CE> Server<C, G, GE, CE>
 where
     C: ClientConnectionType,
     G: GameServer<CE> + Send,
-    GE: Serialize + Send + Copy,
-    CE: DeserializeOwned,
+    GE: Serialize + DeserializeOwned + Send + Copy,
+    CE: Serialize + DeserializeOwned,
     Self: ServerGameMode<GE, CE>,
 {
     pub async fn init(&mut self) {
@@ -401,4 +392,10 @@ where
         }
         .await
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub enum DispatchMode {
+    AllPlayers,
+    SinglePlayer { player_id: u8 },
 }

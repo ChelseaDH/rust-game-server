@@ -1,10 +1,10 @@
 use crate::server::DispatchMode;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Debug, Deserialize)]
-pub enum GameServerEvent<E: Serialize + Send> {
+#[derive(Debug)]
+pub enum GameServerEvent<E: Serialize + DeserializeOwned> {
     DispatchToClient {
         dispatch_mode: DispatchMode,
         event: E,
@@ -14,14 +14,13 @@ pub enum GameServerEvent<E: Serialize + Send> {
 
 #[async_trait]
 pub trait GameServer<E: DeserializeOwned> {
-    async fn begin(&mut self);
+    async fn begin(&self);
     async fn handle_event(&mut self, event: E);
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
-pub enum GameClientEvent<E: Serialize + Send> {
+#[derive(Debug, PartialEq)]
+pub enum GameClientEvent<E: Serialize + DeserializeOwned> {
     DispatchToServer { event: E },
-    Write { message: String },
     GameOver,
 }
 

@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use log::info;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::string::String;
@@ -66,7 +65,7 @@ impl TicTacToeServer {
         self.current_player = get_alternative_player_id(self.current_player);
     }
 
-    async fn dispatch_board_updated_event(&mut self) {
+    async fn dispatch_board_updated_event(&self) {
         let board_cells = self.board.get_cell_occupiers();
         self.server_channel
             .send(GameServerEvent::DispatchToClient {
@@ -77,7 +76,7 @@ impl TicTacToeServer {
             .unwrap()
     }
 
-    async fn dispatch_player_turn_event(&mut self, dispatch_mode: DispatchMode) {
+    async fn dispatch_player_turn_event(&self, dispatch_mode: DispatchMode) {
         self.server_channel
             .send(GameServerEvent::DispatchToClient {
                 dispatch_mode,
@@ -100,7 +99,7 @@ impl TicTacToeServer {
 
 #[async_trait]
 impl GameServer<ClientEvent> for TicTacToeServer {
-    async fn begin(&mut self) {
+    async fn begin(&self) {
         self.dispatch_board_updated_event().await;
         self.dispatch_player_turn_event(DispatchMode::AllPlayers)
             .await;
@@ -158,7 +157,7 @@ impl GameServer<ClientEvent> for TicTacToeServer {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum ClientEvent {
     MoveMade { player_id: u8, move_index: usize },
 }
@@ -256,9 +255,7 @@ where
     }
 
     async fn make_player_move(&mut self, player_id: u8) {
-        info!("Waiting for player {} to make a move", player_id);
         let move_index = self.get_move().await;
-        info!("Player {} made move with index {}", player_id, move_index);
         self.client_channel
             .send(GameClientEvent::DispatchToServer {
                 event: MoveMade {
@@ -279,12 +276,8 @@ where
             )
             .unwrap();
 
-            info!("Sent pre-move info");
-
             let input_text = &mut String::new();
             self.input.read_line(input_text).unwrap();
-
-            info!("Read line");
 
             match input_text.trim().parse::<usize>() {
                 Err(_) => writeln!(
@@ -315,12 +308,7 @@ where
     }
 
     async fn handle_player_turn_event(&mut self, player_id: u8) {
-        info!("Player turn event received for player {}", player_id);
         let player_icon = self.get_player_icon_by_id(player_id);
-        info!(
-            "Determined that player {} has icon {}",
-            player_id, player_icon
-        );
         writeln!(
             &mut self.user_output.lock().unwrap(),
             "Player {}'s turn!",

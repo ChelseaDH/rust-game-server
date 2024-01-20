@@ -26,8 +26,8 @@ impl ClientType for OnlineClient {}
 
 pub struct Client<O, GE, G, GSE>
 where
-    O: io::Write + Send + Sync + Sync,
-    GE: Serialize + Send,
+    O: io::Write + Send + Sync,
+    GE: Serialize + DeserializeOwned + Send,
     G: GameClient<GSE>,
     GSE: DeserializeOwned + Send,
 {
@@ -42,7 +42,7 @@ where
 impl<O, GE, G, GSE> Client<O, GE, G, GSE>
 where
     O: io::Write + Send + Sync,
-    GE: Serialize + Send,
+    GE: Serialize + DeserializeOwned + Send,
     G: GameClient<GSE>,
     GSE: DeserializeOwned + Send,
 {
@@ -89,7 +89,7 @@ where
 impl<O, GE, G, GSE> Client<O, GE, G, GSE>
 where
     O: io::Write + Send + Sync,
-    GE: Serialize + Send,
+    GE: Serialize + DeserializeOwned + Send,
     G: GameClient<GSE>,
     GSE: DeserializeOwned + Send,
 {
@@ -130,10 +130,6 @@ where
                 GameClientEvent::DispatchToServer { event } => {
                     self.server_connection.write_event(event).await
                 }
-                GameClientEvent::Write { message } => {
-                    writeln!(&mut self.user_output.lock().unwrap(), "{}", message).unwrap();
-                    Ok(())
-                }
                 GameClientEvent::GameOver => {
                     self.shutdown().await;
                     Ok(())
@@ -142,7 +138,7 @@ where
         }
     }
 
-    fn handle_error(&mut self, error: server::Error) {
+    fn handle_error(&self, error: server::Error) {
         writeln!(&mut self.user_output.lock().unwrap(), "Error: {}", error).unwrap();
     }
 
@@ -162,7 +158,7 @@ where
     }
 }
 
-pub enum IncomingEvent<SE: DeserializeOwned + Send, GE: Serialize + Send> {
+pub enum IncomingEvent<SE: DeserializeOwned, GE: Serialize + DeserializeOwned> {
     Server(server::OutgoingEvent<SE>),
     Game(GameClientEvent<GE>),
 }
@@ -227,20 +223,5 @@ mod tests {
             .unwrap();
         assert_eq!(client.running, true);
         assert_eq!(output, b"Error: Invalid message sent.\n")
-    }
-
-    #[tokio::test]
-    async fn generic_client_handles_write_event_from_game() {
-        let mut output = Vec::new();
-        let mut client = get_local_test_client(&[], &mut output).await;
-
-        client
-            .handle_event(IncomingEvent::Game(GameClientEvent::Write {
-                message: String::from("Hello player!"),
-            }))
-            .await
-            .unwrap();
-        assert_eq!(client.running, true);
-        assert_eq!(output, b"Hello player!\n")
     }
 }
