@@ -1,12 +1,13 @@
 use std::io;
 use std::net::Ipv4Addr;
+
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::client::{LocalClient, OnlineClient};
+use crate::client::{Client, LocalClient, OnlineClient};
+use crate::connection::Connection;
 use crate::lobby::Lobby;
 use crate::server::LocalConnection;
 use crate::tic_tac_toe::{TicTacToeClient, TicTacToeServer};
-use crate::{client::Client, connection::Connection};
 
 mod client;
 mod connection;

@@ -10,7 +10,7 @@ use tokio::sync::mpsc::Receiver;
 use crate::connection::{Connection, ReadError, WriteError};
 use crate::game::{GameClient, GameClientEvent};
 use crate::server;
-use crate::tic_tac_toe::{self, ClientEvent, TicTacToeClient};
+use crate::tic_tac_toe::{self, TicTacToeClient};
 
 pub trait ClientType {}
 
@@ -50,7 +50,12 @@ where
         connection: Connection,
         input: I,
         output: O,
-    ) -> Client<O, ClientEvent, TicTacToeClient<I, O, LocalClient>, tic_tac_toe::ServerEvent> {
+    ) -> Client<
+        O,
+        tic_tac_toe::ClientEvent,
+        TicTacToeClient<I, O, LocalClient>,
+        tic_tac_toe::ServerEvent,
+    > {
         let (game_sender, game_receiver) = mpsc::channel(10);
         let output = Arc::new(Mutex::new(output));
         let output_clone = Arc::clone(&output);
@@ -70,7 +75,12 @@ where
         id: u8,
         input: I,
         output: O,
-    ) -> Client<O, ClientEvent, TicTacToeClient<I, O, OnlineClient>, tic_tac_toe::ServerEvent> {
+    ) -> Client<
+        O,
+        tic_tac_toe::ClientEvent,
+        TicTacToeClient<I, O, OnlineClient>,
+        tic_tac_toe::ServerEvent,
+    > {
         let (game_sender, game_receiver) = mpsc::channel(10);
         let output = Arc::new(Mutex::new(output));
         let output_clone = Arc::clone(&output);
@@ -182,13 +192,13 @@ mod tests {
         output: &'a mut Vec<u8>,
     ) -> Client<
         &'a mut Vec<u8>,
-        ClientEvent,
+        tic_tac_toe::ClientEvent,
         TicTacToeClient<&'a [u8], &'a mut Vec<u8>, LocalClient>,
         tic_tac_toe::ServerEvent,
     > {
         Client::<
             &'a mut Vec<u8>,
-            ClientEvent,
+            tic_tac_toe::ClientEvent,
             TicTacToeClient<&'a [u8], &'a mut Vec<u8>, LocalClient>,
             tic_tac_toe::ServerEvent,
         >::new_local_tic_tac_toe(Connection::new(get_test_stream().await), input, output)

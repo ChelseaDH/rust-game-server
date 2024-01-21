@@ -1,11 +1,12 @@
-use crate::connection::Connection;
-use crate::server::{OnlineConnection, Player, Server};
-use crate::tic_tac_toe::TicTacToeServer;
-use crate::{connection, tic_tac_toe};
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
-use std::fmt::{self, Formatter};
 use thiserror::__private::DisplayAsDisplay;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+
+use crate::connection::{self, Connection};
+use crate::server::{OnlineConnection, Player, Server};
+use crate::tic_tac_toe::{self, TicTacToeServer};
 
 const GAME_ID: u16 = 12345;
 
@@ -75,17 +76,19 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_display())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::net::Ipv4Addr;
+
     use crate::server::{IncomingEvent, ServerGameMode};
     use crate::tic_tac_toe::ClientEvent;
-    use std::net::Ipv4Addr;
+
+    use super::*;
 
     #[derive(Serialize, Deserialize)]
     struct TestEvent {

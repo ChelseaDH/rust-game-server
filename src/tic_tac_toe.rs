@@ -1,16 +1,16 @@
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::io;
 use std::string::String;
 use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
 
 use crate::client::{ClientType, LocalClient, OnlineClient};
 use crate::game::{GameClient, GameClientEvent, GameServer, GameServerEvent};
 use crate::server::{get_alternative_player_id, DispatchMode, PLAYER_ONE_ID, PLAYER_TWO_ID};
-use crate::tic_tac_toe::board::Board;
 pub use crate::tic_tac_toe::board::BOARD_SIZE;
-use crate::tic_tac_toe::ClientEvent::MoveMade;
+use crate::tic_tac_toe::{board::Board, ClientEvent::MoveMade};
 
 mod board;
 
@@ -378,6 +378,7 @@ where
 mod tests {
     use std::io::BufReader;
     use std::sync::{Arc, Mutex};
+
     use tokio::sync::mpsc::error::TryRecvError;
     use tokio::sync::mpsc::Receiver;
 

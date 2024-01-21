@@ -1,7 +1,8 @@
+use std::marker::PhantomData;
+
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
 use tokio::join;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 

@@ -1,7 +1,8 @@
-use crate::server::DispatchMode;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+
+use crate::server::DispatchMode;
 
 #[derive(Debug)]
 pub enum GameServerEvent<E: Serialize + DeserializeOwned> {
