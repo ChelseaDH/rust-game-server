@@ -61,7 +61,7 @@ impl<I: AsyncWrite + Unpin, O: AsyncBufRead + Unpin> InputOutput<I, O> {
         // Player turn event being received
         self.assert_stdout_contains(&String::from(prompt)).await;
         self.assert_stdout_contains(&String::from(
-            "Input a number between 0 and 8 to make your move:",
+            "Input a number between 1 and 9 to make your move:",
         ))
         .await;
 
@@ -117,31 +117,31 @@ async fn local_game_runs_until_win() {
     // Player moves being made
     io.assert_player_move(
         "Player X's turn",
-        1,
+        2,
         [" ", "X", " ", " ", " ", " ", " ", " ", " "],
     )
     .await;
     io.assert_player_move(
         "Player O's turn",
-        4,
+        5,
         [" ", "X", " ", " ", "O", " ", " ", " ", " "],
     )
     .await;
     io.assert_player_move(
         "Player X's turn",
-        0,
+        1,
         ["X", "X", " ", " ", "O", " ", " ", " ", " "],
     )
     .await;
     io.assert_player_move(
         "Player O's turn",
-        6,
+        7,
         ["X", "X", " ", " ", "O", " ", "O", " ", " "],
     )
     .await;
     io.assert_player_move(
         "Player X's turn",
-        2,
+        3,
         ["X", "X", "X", " ", "O", " ", "O", " ", " "],
     )
     .await;
@@ -176,7 +176,7 @@ async fn online_game_runs_until_win() {
     player_one_io
         .assert_player_move(
             "It's your turn!",
-            1,
+            2,
             [" ", "X", " ", " ", " ", " ", " ", " ", " "],
         )
         .await;
@@ -194,7 +194,7 @@ async fn online_game_runs_until_win() {
     player_two_io
         .assert_player_move(
             "It's your turn!",
-            4,
+            5,
             [" ", "X", " ", " ", "O", " ", " ", " ", " "],
         )
         .await;
@@ -205,7 +205,7 @@ async fn online_game_runs_until_win() {
     // Player one makes an invalid move, followed by a valid one
     player_one_io
         .assert_stdout_contains(&String::from(
-            "It's your turn!\nInput a number between 0 and 8 to make your move:",
+            "It's your turn!\nInput a number between 1 and 9 to make your move:",
         ))
         .await;
     player_two_io
@@ -214,13 +214,13 @@ async fn online_game_runs_until_win() {
     player_one_io.write_string("10\n").await;
     player_one_io
         .assert_stdout_contains(&String::from(
-            "Error: The input should be a number between 0 and 8.",
+            "Error: The input should be a number between 1 and 9.",
         ))
         .await;
     player_one_io
         .assert_player_move(
             "It's your turn!",
-            0,
+            1,
             ["X", "X", " ", " ", "O", " ", " ", " ", " "],
         )
         .await;
@@ -235,7 +235,7 @@ async fn online_game_runs_until_win() {
     player_two_io
         .assert_player_move(
             "It's your turn!",
-            6,
+            7,
             ["X", "X", " ", " ", "O", " ", "O", " ", " "],
         )
         .await;
@@ -247,7 +247,7 @@ async fn online_game_runs_until_win() {
     player_one_io
         .assert_player_move(
             "It's your turn!",
-            2,
+            3,
             ["X", "X", "X", " ", "O", " ", "O", " ", " "],
         )
         .await;
@@ -293,7 +293,7 @@ async fn online_game_handles_client_disconnection() {
     // Player one makes a move
     player_one_io
         .assert_stdout_contains(&String::from(
-            "Input a number between 0 and 8 to make your move:",
+            "Input a number between 1 and 9 to make your move:",
         ))
         .await;
     player_one_io.stdin.write_all(&[49, b'\n']).await.unwrap();

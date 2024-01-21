@@ -38,7 +38,7 @@ pub enum ServerEvent {
 
 #[derive(Copy, Clone, Serialize, Deserialize, thiserror::Error, Debug)]
 pub enum Error {
-    #[error("The input should be a number between 0 and {}.", BOARD_SIZE - 1)]
+    #[error("The input should be a number between 1 and {}.", BOARD_SIZE)]
     InvalidCellIndex,
     #[error("This cell is already occupied.")]
     CellOccupied,
@@ -271,8 +271,8 @@ where
         loop {
             writeln!(
                 &mut self.user_output.lock().unwrap(),
-                "Input a number between 0 and {} to make your move:",
-                BOARD_SIZE - 1
+                "Input a number between 1 and {} to make your move:",
+                BOARD_SIZE
             )
             .unwrap();
 
@@ -477,7 +477,7 @@ mod tests {
         let (mut client, output, _) = get_test_client_and_output(input, LocalClient {}).await;
 
         client.get_move().await;
-        assert_client_output(output, "Input a number between 0 and 8 to make your move:\nThat is not a number, please try again.\nInput a number between 0 and 8 to make your move:\n")
+        assert_client_output(output, "Input a number between 1 and 9 to make your move:\nThat is not a number, please try again.\nInput a number between 1 and 9 to make your move:\n")
     }
 
     #[tokio::test]
@@ -505,7 +505,7 @@ mod tests {
         client.handle_player_turn_event(1).await;
         assert_client_output(
             output,
-            "Player X's turn!\nInput a number between 0 and 8 to make your move:\n",
+            "Player X's turn!\nInput a number between 1 and 9 to make your move:\n",
         );
 
         let event = receiver.recv().await;
@@ -529,7 +529,7 @@ mod tests {
         client.handle_player_turn_event(1).await;
         assert_client_output(
             output,
-            "It's your turn!\nInput a number between 0 and 8 to make your move:\n",
+            "It's your turn!\nInput a number between 1 and 9 to make your move:\n",
         );
 
         let event = receiver.recv().await;

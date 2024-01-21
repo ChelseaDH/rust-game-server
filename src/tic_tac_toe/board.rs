@@ -55,12 +55,12 @@ impl Board {
         })
     }
 
-    pub(crate) fn add_move(&mut self, player_id: u8, cell_index: usize) -> Result<(), Error> {
-        if cell_index >= BOARD_SIZE {
+    pub(crate) fn add_move(&mut self, player_id: u8, player_move: usize) -> Result<(), Error> {
+        if player_move == 0 || player_move > BOARD_SIZE {
             return Err(Error::InvalidCellIndex);
         }
 
-        let cell = &mut self.cells[cell_index];
+        let cell = &mut self.cells[player_move - 1];
         match cell.state {
             BoardCellState::Empty => {
                 cell.state = BoardCellState::Occupied { player_id };
