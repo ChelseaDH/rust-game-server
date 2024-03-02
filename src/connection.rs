@@ -13,8 +13,8 @@ impl Connection {
         Connection { stream }
     }
 
-    pub async fn write_event<T: Serialize>(&mut self, event: T) -> Result<(), WriteError> {
-        let serialised = serde_json::to_string(&event)?;
+    pub async fn write_event<T: Serialize>(&mut self, event: &T) -> Result<(), WriteError> {
+        let serialised = serde_json::to_string(event)?;
         let len = serialised.len() as u16;
         let bytes = len.to_be_bytes();
 
@@ -30,7 +30,7 @@ impl Connection {
         let mut len_bytes = [0; 2];
         self.stream.read_exact(&mut len_bytes).await?;
         let len = u16::from_be_bytes(len_bytes);
-        if len > 250 {
+        if len > 500 {
             return Err(ReadError::InvalidMessageLength);
         }
 

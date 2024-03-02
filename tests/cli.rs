@@ -363,8 +363,10 @@ async fn online_game_handles_client_sending_malicious_message() {
         .unwrap();
 
     // Client two receives invalid message error and shutdown request
-    let mut buf = String::new();
-    stream.read_to_string(&mut buf).await.unwrap();
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await.unwrap();
+    let buf = String::from_utf8_lossy(&buf);
+
     assert!(buf.contains("InvalidMessage"));
     assert!(buf.contains("Shutdown"));
 

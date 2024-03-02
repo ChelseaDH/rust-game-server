@@ -3,11 +3,11 @@ use std::net::Ipv4Addr;
 
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::client::{Client, LocalClient, OnlineClient};
+use crate::client::Client;
 use crate::connection::Connection;
+use crate::game::Game;
 use crate::lobby::Lobby;
 use crate::server::LocalConnection;
-use crate::tic_tac_toe::{TicTacToeClient, TicTacToeServer};
 
 mod client;
 mod connection;
@@ -38,26 +38,18 @@ async fn main() {
                 let connection = Connection::new(stream_one);
 
                 // Play the game
-                let mut server = server::Server::<
-                    LocalConnection,
-                    TicTacToeServer,
-                    tic_tac_toe::ServerEvent,
-                    tic_tac_toe::ClientEvent,
-                >::new_tic_tac_toe(connection);
+                let mut server =
+                    server::Server::<LocalConnection>::new(connection, Game::TicTacToe);
                 server.init().await;
             });
 
             // Set up client connection
             let stream = TcpStream::connect(address).await.unwrap();
-            let mut client = Client::<
-                io::Stdout,
-                tic_tac_toe::ClientEvent,
-                TicTacToeClient<io::BufReader<io::Stdin>, io::Stdout, LocalClient>,
-                tic_tac_toe::ServerEvent,
-            >::new_local_tic_tac_toe(
+            let mut client = Client::<io::Stdout>::new_local(
                 Connection::new(stream),
                 io::BufReader::new(io::stdin()),
                 io::stdout(),
+                Game::TicTacToe,
             );
             client.play_game().await;
 
@@ -101,16 +93,12 @@ async fn main() {
 
             // Set up client connection
             let connection = lobby::connect_to_game(address).await.unwrap();
-            let mut client = Client::<
-                io::Stdout,
-                tic_tac_toe::ClientEvent,
-                TicTacToeClient<io::BufReader<io::Stdin>, io::Stdout, OnlineClient>,
-                tic_tac_toe::ServerEvent,
-            >::new_online_tic_tac_toe(
+            let mut client = Client::<io::Stdout>::new_online(
                 connection,
                 server::PLAYER_ONE_ID,
                 io::BufReader::new(io::stdin()),
                 io::stdout(),
+                Game::TicTacToe,
             );
             client.play_game().await;
 
@@ -123,16 +111,12 @@ async fn main() {
 
             match lobby::connect_to_game(address).await {
                 Ok(connection) => {
-                    let mut client = Client::<
-                        io::Stdout,
-                        tic_tac_toe::ClientEvent,
-                        TicTacToeClient<io::BufReader<io::Stdin>, io::Stdout, OnlineClient>,
-                        tic_tac_toe::ServerEvent,
-                    >::new_online_tic_tac_toe(
+                    let mut client = Client::<io::Stdout>::new_online(
                         connection,
                         server::PLAYER_TWO_ID,
                         io::BufReader::new(io::stdin()),
                         io::stdout(),
+                        Game::TicTacToe,
                     );
                     client.play_game().await;
                 }

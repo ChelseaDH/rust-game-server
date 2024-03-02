@@ -5,8 +5,8 @@ use thiserror::__private::DisplayAsDisplay;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
 use crate::connection::{self, Connection};
+use crate::game::Game;
 use crate::server::{OnlineConnection, Player, Server};
-use crate::tic_tac_toe::{self, TicTacToeServer};
 
 const GAME_ID: u16 = 12345;
 
@@ -19,22 +19,14 @@ impl Lobby {
         Lobby { listener }
     }
 
-    pub async fn set_up_online_server(
-        &mut self,
-    ) -> Server<OnlineConnection, TicTacToeServer, tic_tac_toe::ServerEvent, tic_tac_toe::ClientEvent>
-    {
+    pub async fn set_up_online_server(&mut self) -> Server<OnlineConnection> {
         let connection_one = self.get_connection().await;
         let connection_two = self.get_connection().await;
 
         let player_one = Player::new_player_one(connection_one);
         let player_two = Player::new_player_two(connection_two);
 
-        Server::<
-            OnlineConnection,
-            TicTacToeServer,
-            tic_tac_toe::ServerEvent,
-            tic_tac_toe::ClientEvent,
-        >::new_tic_tac_toe(player_one, player_two)
+        Server::<OnlineConnection>::new(player_one, player_two, Game::TicTacToe)
     }
 
     async fn get_connection(&mut self) -> Connection {
@@ -58,7 +50,7 @@ pub async fn connect_to_game<A: ToSocketAddrs>(addr: A) -> Result<Connection, Er
     let stream = TcpStream::connect(addr).await?;
     let mut connection = Connection::new(stream);
     connection
-        .write_event(ConnectionRequest { game_id: GAME_ID })
+        .write_event(&ConnectionRequest { game_id: GAME_ID })
         .await?;
 
     Ok(connection)
@@ -83,6 +75,7 @@ impl fmt::Display for Error {
 
 #[cfg(test)]
 mod tests {
+    use crate::game;
     use std::net::Ipv4Addr;
 
     use crate::server::{IncomingEvent, ServerGameMode};
@@ -110,14 +103,19 @@ mod tests {
             // It's not possible to predict the order that the messages will be received in, so we conditionally assert
             for _i in 0..1 {
                 match server.get_next_incoming_event().await.unwrap() {
-                    IncomingEvent::Client(ClientEvent::MoveMade {
-                        player_id,
-                        move_index,
-                    }) => {
-                        if player_id == 1 {
-                            assert_eq!(move_index, 5)
-                        } else {
-                            assert_eq!(move_index, 8)
+                    IncomingEvent::Client(event) => {
+                        let deserialized_event: ClientEvent = game::deserialize_event(event);
+                        match deserialized_event {
+                            ClientEvent::MoveMade {
+                                player_id,
+                                move_index,
+                            } => {
+                                if player_id == 1 {
+                                    assert_eq!(move_index, 5)
+                                } else {
+                                    assert_eq!(move_index, 8)
+                                }
+                            }
                         }
                     }
                     _ => panic!("Unexpected event received from player one connection"),
@@ -129,14 +127,14 @@ mod tests {
         let stream_one = TcpStream::connect(local_addr).await.unwrap();
         let mut connection_one = Connection::new(stream_one);
         connection_one
-            .write_event(ConnectionRequest { game_id: 12345 })
+            .write_event(&ConnectionRequest { game_id: 12345 })
             .await
             .unwrap();
         connection_one
-            .write_event(ClientEvent::MoveMade {
+            .write_event(&game::serialize_event(ClientEvent::MoveMade {
                 player_id: 1,
                 move_index: 5,
-            })
+            }))
             .await
             .unwrap();
 
@@ -144,14 +142,14 @@ mod tests {
         let bogus_stream = TcpStream::connect(local_addr).await.unwrap();
         let mut bogus_connection = Connection::new(bogus_stream);
         bogus_connection
-            .write_event(ConnectionRequest { game_id: 999 })
+            .write_event(&ConnectionRequest { game_id: 999 })
             .await
             .unwrap();
         bogus_connection
-            .write_event(ClientEvent::MoveMade {
+            .write_event(&game::serialize_event(ClientEvent::MoveMade {
                 player_id: 2,
                 move_index: 2,
-            })
+            }))
             .await
             .unwrap();
 
@@ -159,14 +157,14 @@ mod tests {
         let stream_two = TcpStream::connect(local_addr).await.unwrap();
         let mut connection_two = Connection::new(stream_two);
         connection_two
-            .write_event(ConnectionRequest { game_id: 12345 })
+            .write_event(&ConnectionRequest { game_id: 12345 })
             .await
             .unwrap();
         connection_two
-            .write_event(ClientEvent::MoveMade {
+            .write_event(&game::serialize_event(ClientEvent::MoveMade {
                 player_id: 2,
                 move_index: 8,
-            })
+            }))
             .await
             .unwrap();
 
@@ -193,11 +191,11 @@ mod tests {
         let stream_one = TcpStream::connect(local_addr).await.unwrap();
         let mut connection_one = Connection::new(stream_one);
         connection_one
-            .write_event(ConnectionRequest { game_id: 999 })
+            .write_event(&ConnectionRequest { game_id: 999 })
             .await
             .unwrap();
         connection_one
-            .write_event(TestEvent {
+            .write_event(&TestEvent {
                 content: String::from("Content from incorrect client"),
             })
             .await
@@ -207,11 +205,11 @@ mod tests {
         let stream_two = TcpStream::connect(local_addr).await.unwrap();
         let mut connection_two = Connection::new(stream_two);
         connection_two
-            .write_event(ConnectionRequest { game_id: 12345 })
+            .write_event(&ConnectionRequest { game_id: 12345 })
             .await
             .unwrap();
         connection_two
-            .write_event(TestEvent {
+            .write_event(&TestEvent {
                 content: String::from("Content from correct client"),
             })
             .await
