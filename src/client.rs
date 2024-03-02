@@ -64,7 +64,7 @@ where
         }
     }
 
-    pub fn new_online_tic_tac_toe<I: io::BufRead + Send + Sync + 'a>(
+    pub fn new_online<I: io::BufRead + Send + Sync + 'a>(
         connection: Connection,
         id: u8,
         input: I,
