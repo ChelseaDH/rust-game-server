@@ -1,15 +1,12 @@
-use std::marker::PhantomData;
-
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::join;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::connection::{Connection, ErrorCategory, HasErrorCategory, ReadError, WriteError};
-use crate::game::{GameServer, GameServerEvent};
+use crate::game::{Game, GameServer, GameServerEvent};
 pub use crate::server::player::{get_alternative_player_id, Player, PLAYER_ONE_ID, PLAYER_TWO_ID};
-use crate::tic_tac_toe::{self, TicTacToeServer};
+use crate::tic_tac_toe::TicTacToeServer;
 
 mod player;
 
@@ -45,56 +42,40 @@ pub struct OnlineConnection {
 
 impl ClientConnectionType for OnlineConnection {}
 
-pub struct Server<C, G, GE, CE>
+pub struct Server<C>
 where
     C: ClientConnectionType,
-    G: GameServer<CE> + Send,
-    GE: Serialize + DeserializeOwned + Send + Copy,
-    CE: Serialize + DeserializeOwned,
 {
     state: State,
     client_connection: C,
     channel: (Sender<ServerEvent>, Receiver<ServerEvent>),
-    game: G,
-    game_receiver: Receiver<GameServerEvent<GE>>,
-    game_client_event_type: PhantomData<CE>,
+    game: Box<dyn GameServer + Send + Sync>,
+    game_receiver: Receiver<GameServerEvent>,
 }
 
-impl<G, GE, CE> Server<LocalConnection, G, GE, CE>
-where
-    G: GameServer<CE> + Send,
-    GE: Serialize + DeserializeOwned + Send + Copy,
-    CE: Serialize + DeserializeOwned,
-{
-    pub fn new_tic_tac_toe(
-        connection: Connection,
-    ) -> Server<LocalConnection, TicTacToeServer, tic_tac_toe::ServerEvent, tic_tac_toe::ClientEvent>
-    {
+impl Server<LocalConnection> {
+    pub fn new(connection: Connection, game: Game) -> Server<LocalConnection> {
         let (game_sender, game_receiver) = mpsc::channel(10);
+        let game: Box<dyn GameServer + Send + Sync> = match game {
+            Game::TicTacToe => Box::new(TicTacToeServer::new(game_sender)),
+        };
 
         Server {
             state: State::PreInitialise,
             client_connection: LocalConnection { connection },
             channel: mpsc::channel(1),
-            game: TicTacToeServer::new(game_sender),
+            game,
             game_receiver,
-            game_client_event_type: PhantomData,
         }
     }
 }
 
-impl<G, GE, CE> Server<OnlineConnection, G, GE, CE>
-where
-    G: GameServer<CE> + Send,
-    GE: Serialize + DeserializeOwned + Send + Copy,
-    CE: Serialize + DeserializeOwned,
-{
-    pub fn new_tic_tac_toe(
-        player_one: Player,
-        player_two: Player,
-    ) -> Server<OnlineConnection, TicTacToeServer, tic_tac_toe::ServerEvent, tic_tac_toe::ClientEvent>
-    {
+impl Server<OnlineConnection> {
+    pub fn new(player_one: Player, player_two: Player, game: Game) -> Server<OnlineConnection> {
         let (game_sender, game_receiver) = mpsc::channel(10);
+        let game: Box<dyn GameServer + Send + Sync> = match game {
+            Game::TicTacToe => Box::new(TicTacToeServer::new(game_sender)),
+        };
 
         Server {
             state: State::PreInitialise,
@@ -103,29 +84,24 @@ where
                 player_two,
             },
             channel: mpsc::channel(1),
-            game: TicTacToeServer::new(game_sender),
+            game,
             game_receiver,
-            game_client_event_type: PhantomData,
         }
     }
 }
 
-pub enum IncomingEvent<GE, CE>
-where
-    GE: Serialize + DeserializeOwned,
-    CE: Serialize + DeserializeOwned,
-{
+pub enum IncomingEvent {
     Server(ServerEvent),
-    Game(GameServerEvent<GE>),
-    Client(CE),
+    Game(GameServerEvent),
+    Client(Vec<u8>),
 }
 
-#[derive(Copy, Clone, Serialize, Deserialize)]
-pub enum OutgoingEvent<GE> {
+#[derive(Serialize, Deserialize, Debug)]
+pub enum OutgoingEvent {
     ErrorOccurred(Error),
     GameStarted,
     Shutdown,
-    Game { event: GE },
+    Game { event: Vec<u8> },
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, thiserror::Error, Debug)]
@@ -135,32 +111,23 @@ pub enum Error {
 }
 
 #[async_trait]
-pub trait ServerGameMode<GE, CE>
-where
-    GE: Serialize + DeserializeOwned + Send + Copy,
-    CE: Serialize + DeserializeOwned,
-{
-    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE, CE>, (ReadError, u8)>;
+pub trait ServerGameMode {
+    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent, (ReadError, u8)>;
     async fn dispatch_event_to_player(
         &mut self,
-        event: OutgoingEvent<GE>,
+        event: &OutgoingEvent,
         player_id: u8,
     ) -> Result<(), (WriteError, u8)>;
     async fn dispatch_event_to_all_players(
         &mut self,
-        event: OutgoingEvent<GE>,
+        event: &OutgoingEvent,
     ) -> Result<(), (WriteError, u8)>;
     async fn shutdown_all_client_connections(&mut self);
 }
 
 #[async_trait]
-impl<G, GE, CE> ServerGameMode<GE, CE> for Server<LocalConnection, G, GE, CE>
-where
-    G: GameServer<CE> + Send,
-    GE: Serialize + DeserializeOwned + Send + Copy,
-    CE: Serialize + DeserializeOwned + Send,
-{
-    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE, CE>, (ReadError, u8)> {
+impl ServerGameMode for Server<LocalConnection> {
+    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent, (ReadError, u8)> {
         return tokio::select! {
             result = self.channel.1.recv() => Ok(IncomingEvent::Server(result.unwrap())),
             result = self.game_receiver.recv() => Ok(IncomingEvent::Game(result.unwrap())),
@@ -170,7 +137,7 @@ where
 
     async fn dispatch_event_to_player(
         &mut self,
-        event: OutgoingEvent<GE>,
+        event: &OutgoingEvent,
         _player_id: u8,
     ) -> Result<(), (WriteError, u8)> {
         self.client_connection
@@ -182,7 +149,7 @@ where
 
     async fn dispatch_event_to_all_players(
         &mut self,
-        event: OutgoingEvent<GE>,
+        event: &OutgoingEvent,
     ) -> Result<(), (WriteError, u8)> {
         self.dispatch_event_to_player(event, PLAYER_ONE_ID).await
     }
@@ -193,13 +160,8 @@ where
 }
 
 #[async_trait]
-impl<G, GE, CE> ServerGameMode<GE, CE> for Server<OnlineConnection, G, GE, CE>
-where
-    G: GameServer<CE> + Send,
-    GE: Serialize + DeserializeOwned + Send + Copy,
-    CE: Serialize + DeserializeOwned + Send,
-{
-    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent<GE, CE>, (ReadError, u8)> {
+impl ServerGameMode for Server<OnlineConnection> {
+    async fn get_next_incoming_event(&mut self) -> Result<IncomingEvent, (ReadError, u8)> {
         return tokio::select! {
             result = self.channel.1.recv() => Ok(IncomingEvent::Server(result.unwrap())),
             result = self.game_receiver.recv() => Ok(IncomingEvent::Game(result.unwrap())),
@@ -210,7 +172,7 @@ where
 
     async fn dispatch_event_to_player(
         &mut self,
-        event: OutgoingEvent<GE>,
+        event: &OutgoingEvent,
         player_id: u8,
     ) -> Result<(), (WriteError, u8)> {
         match player_id {
@@ -235,12 +197,10 @@ where
 
     async fn dispatch_event_to_all_players(
         &mut self,
-        event: OutgoingEvent<GE>,
+        event: &OutgoingEvent,
     ) -> Result<(), (WriteError, u8)> {
-        let event_copy = event;
         self.dispatch_event_to_player(event, PLAYER_ONE_ID).await?;
-        self.dispatch_event_to_player(event_copy, PLAYER_TWO_ID)
-            .await
+        self.dispatch_event_to_player(event, PLAYER_TWO_ID).await
     }
 
     async fn shutdown_all_client_connections(&mut self) {
@@ -251,13 +211,10 @@ where
     }
 }
 
-impl<C, G, GE, CE> Server<C, G, GE, CE>
+impl<C> Server<C>
 where
     C: ClientConnectionType,
-    G: GameServer<CE> + Send,
-    GE: Serialize + DeserializeOwned + Send + Copy,
-    CE: Serialize + DeserializeOwned,
-    Self: ServerGameMode<GE, CE>,
+    Self: ServerGameMode,
 {
     pub async fn init(&mut self) {
         self.channel.0.send(ServerEvent::BeginGame).await.unwrap();
@@ -297,11 +254,11 @@ where
 
     async fn handle_incoming_event(
         &mut self,
-        event: IncomingEvent<GE, CE>,
+        event: IncomingEvent,
     ) -> Result<(), (WriteError, u8)> {
         match (self.state, event) {
             (State::PreInitialise, IncomingEvent::Server(ServerEvent::BeginGame)) => {
-                self.dispatch_event_to_all_players(OutgoingEvent::GameStarted)
+                self.dispatch_event_to_all_players(&OutgoingEvent::GameStarted)
                     .await?;
 
                 self.game.begin().await;
@@ -357,19 +314,19 @@ where
             ErrorCategory::Deserialisation | ErrorCategory::InvalidParameters => {
                 let _ = self
                     .dispatch_event_to_player(
-                        OutgoingEvent::ErrorOccurred(Error::InvalidMessage),
+                        &OutgoingEvent::ErrorOccurred(Error::InvalidMessage),
                         player_id,
                     )
                     .await;
                 let _ = self
-                    .dispatch_event_to_all_players(OutgoingEvent::Shutdown)
+                    .dispatch_event_to_all_players(&OutgoingEvent::Shutdown)
                     .await;
                 self.shutdown_all_client_connections().await;
             }
             ErrorCategory::ReadWrite => {
                 let _ = self
                     .dispatch_event_to_player(
-                        OutgoingEvent::Shutdown,
+                        &OutgoingEvent::Shutdown,
                         get_alternative_player_id(player_id),
                     )
                     .await;
@@ -381,14 +338,14 @@ where
     async fn dispatch_game_event(
         &mut self,
         dispatch_mode: DispatchMode,
-        event: GE,
+        event: Vec<u8>,
     ) -> Result<(), (WriteError, u8)> {
+        let event = OutgoingEvent::Game { event };
+
         match dispatch_mode {
-            DispatchMode::AllPlayers => {
-                self.dispatch_event_to_all_players(OutgoingEvent::Game { event })
-            }
+            DispatchMode::AllPlayers => self.dispatch_event_to_all_players(&event),
             DispatchMode::SinglePlayer { player_id } => {
-                self.dispatch_event_to_player(OutgoingEvent::Game { event }, player_id)
+                self.dispatch_event_to_player(&event, player_id)
             }
         }
         .await

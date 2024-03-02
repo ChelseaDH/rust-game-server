@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
 
 use crate::client::{ClientType, LocalClient, OnlineClient};
-use crate::game::{GameClient, GameClientEvent, GameServer, GameServerEvent};
+use crate::game::{self, GameClient, GameClientEvent, GameServer, GameServerEvent};
 use crate::server::{get_alternative_player_id, DispatchMode, PLAYER_ONE_ID, PLAYER_TWO_ID};
 pub use crate::tic_tac_toe::board::BOARD_SIZE;
 use crate::tic_tac_toe::{board::Board, ClientEvent::MoveMade};
@@ -49,11 +49,11 @@ pub enum Error {
 pub struct TicTacToeServer {
     current_player: u8,
     board: Board,
-    server_channel: Sender<GameServerEvent<ServerEvent>>,
+    server_channel: Sender<GameServerEvent>,
 }
 
 impl TicTacToeServer {
-    pub fn new(server_channel: Sender<GameServerEvent<ServerEvent>>) -> TicTacToeServer {
+    pub fn new(server_channel: Sender<GameServerEvent>) -> TicTacToeServer {
         TicTacToeServer {
             current_player: PLAYER_ONE_ID,
             board: Board::new(),
@@ -70,7 +70,7 @@ impl TicTacToeServer {
         self.server_channel
             .send(GameServerEvent::DispatchToClient {
                 dispatch_mode: DispatchMode::AllPlayers,
-                event: ServerEvent::BoardUpdated { board_cells },
+                event: game::serialize_event(ServerEvent::BoardUpdated { board_cells }),
             })
             .await
             .unwrap()
@@ -80,9 +80,9 @@ impl TicTacToeServer {
         self.server_channel
             .send(GameServerEvent::DispatchToClient {
                 dispatch_mode,
-                event: ServerEvent::PlayerTurn {
+                event: game::serialize_event(ServerEvent::PlayerTurn {
                     player_id: self.current_player,
-                },
+                }),
             })
             .await
             .unwrap()
@@ -98,15 +98,15 @@ impl TicTacToeServer {
 }
 
 #[async_trait]
-impl GameServer<ClientEvent> for TicTacToeServer {
+impl GameServer for TicTacToeServer {
     async fn begin(&self) {
         self.dispatch_board_updated_event().await;
         self.dispatch_player_turn_event(DispatchMode::AllPlayers)
             .await;
     }
 
-    async fn handle_event(&mut self, event: ClientEvent) {
-        return match event {
+    async fn handle_event(&mut self, event: Vec<u8>) {
+        return match game::deserialize_event(event) {
             MoveMade {
                 player_id,
                 move_index,
@@ -117,7 +117,7 @@ impl GameServer<ClientEvent> for TicTacToeServer {
                             dispatch_mode: DispatchMode::SinglePlayer {
                                 player_id: self.current_player,
                             },
-                            event: ServerEvent::ErrorOccurred { error },
+                            event: game::serialize_event(ServerEvent::ErrorOccurred { error }),
                         })
                         .await
                         .unwrap();
@@ -141,7 +141,7 @@ impl GameServer<ClientEvent> for TicTacToeServer {
                         self.server_channel
                             .send(GameServerEvent::DispatchToClient {
                                 dispatch_mode: DispatchMode::AllPlayers,
-                                event: ServerEvent::GameOver { outcome },
+                                event: game::serialize_event(ServerEvent::GameOver { outcome }),
                             })
                             .await
                             .unwrap();
@@ -169,7 +169,7 @@ where
     C: ClientType,
 {
     input: I,
-    client_channel: Sender<GameClientEvent<ClientEvent>>,
+    client_channel: Sender<GameClientEvent>,
     client_type: C,
     user_output: Arc<Mutex<O>>,
 }
@@ -183,7 +183,7 @@ where
     pub fn new(
         input: I,
         output: Arc<Mutex<O>>,
-        client_channel: Sender<GameClientEvent<ClientEvent>>,
+        client_channel: Sender<GameClientEvent>,
         client_type: C,
     ) -> TicTacToeClient<I, O, C> {
         TicTacToeClient {
@@ -254,38 +254,38 @@ where
         writeln!(&mut self.user_output.lock().unwrap(), "Error: {}", error).unwrap()
     }
 
-    async fn make_player_move(&mut self, player_id: u8) {
-        let move_index = self.get_move().await;
+    async fn make_player_move(&mut self, player_id: u8) -> Result<(), io::Error> {
+        let move_index = self.get_move().await?;
         self.client_channel
             .send(GameClientEvent::DispatchToServer {
-                event: MoveMade {
+                event: game::serialize_event(MoveMade {
                     player_id,
                     move_index,
-                },
+                }),
             })
             .await
             .unwrap();
+
+        Ok(())
     }
 
-    async fn get_move(&mut self) -> usize {
+    async fn get_move(&mut self) -> Result<usize, io::Error> {
         loop {
             writeln!(
                 &mut self.user_output.lock().unwrap(),
                 "Input a number between 1 and {} to make your move:",
                 BOARD_SIZE
-            )
-            .unwrap();
+            )?;
 
             let input_text = &mut String::new();
-            self.input.read_line(input_text).unwrap();
+            self.input.read_line(input_text)?;
 
             match input_text.trim().parse::<usize>() {
                 Err(_) => writeln!(
                     &mut self.user_output.lock().unwrap(),
                     "That is not a number, please try again."
-                )
-                .unwrap(),
-                Ok(index) => return index,
+                )?,
+                Ok(index) => return Ok(index),
             };
         }
     }
@@ -294,7 +294,7 @@ where
 #[async_trait]
 pub trait ClientTypeEvent {
     fn get_game_started_message(&self) -> String;
-    async fn handle_player_turn_event(&mut self, player_id: u8);
+    async fn handle_player_turn_event(&mut self, player_id: u8) -> Result<(), io::Error>;
 }
 
 #[async_trait]
@@ -307,7 +307,7 @@ where
         String::from("Lets begin.")
     }
 
-    async fn handle_player_turn_event(&mut self, player_id: u8) {
+    async fn handle_player_turn_event(&mut self, player_id: u8) -> Result<(), io::Error> {
         let player_icon = self.get_player_icon_by_id(player_id);
         writeln!(
             &mut self.user_output.lock().unwrap(),
@@ -316,7 +316,7 @@ where
         )
         .unwrap();
 
-        self.make_player_move(player_id).await;
+        self.make_player_move(player_id).await
     }
 }
 
@@ -330,23 +330,23 @@ where
         String::from("All players connected, lets begin.")
     }
 
-    async fn handle_player_turn_event(&mut self, player_id: u8) {
+    async fn handle_player_turn_event(&mut self, player_id: u8) -> Result<(), io::Error> {
         if player_id != self.client_type.id {
             writeln!(
                 &mut self.user_output.lock().unwrap(),
                 "Waiting for other player to make a move."
-            )
-            .unwrap();
-            return;
+            )?;
+
+            return Ok(());
         }
 
         writeln!(&mut self.user_output.lock().unwrap(), "It's your turn!").unwrap();
-        self.make_player_move(player_id).await;
+        self.make_player_move(player_id).await
     }
 }
 
 #[async_trait]
-impl<I, O, C> GameClient<ServerEvent> for TicTacToeClient<I, O, C>
+impl<I, O, C> GameClient for TicTacToeClient<I, O, C>
 where
     I: io::BufRead + Send + Sync,
     O: io::Write + Send + Sync,
@@ -362,21 +362,26 @@ where
         .unwrap();
     }
 
-    async fn handle_event(&mut self, event: ServerEvent) {
-        match event {
+    async fn handle_event(&mut self, event: Vec<u8>) -> Result<(), io::Error> {
+        match game::deserialize_event(event) {
             ServerEvent::GameOver { outcome } => self.handle_game_over_event(outcome).await,
             ServerEvent::BoardUpdated { board_cells } => {
                 self.handle_board_updated_event(board_cells).await
             }
             ServerEvent::ErrorOccurred { error } => self.handle_error_occurred_event(error).await,
-            ServerEvent::PlayerTurn { player_id } => self.handle_player_turn_event(player_id).await,
-        }
+            ServerEvent::PlayerTurn { player_id } => {
+                self.handle_player_turn_event(player_id).await?
+            }
+        };
+
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::BufReader;
+    use std::str::from_utf8;
     use std::sync::{Arc, Mutex};
 
     use tokio::sync::mpsc::error::TryRecvError;
@@ -390,7 +395,7 @@ mod tests {
     ) -> (
         TicTacToeClient<BufReader<&[u8]>, Vec<u8>, C>,
         Arc<Mutex<Vec<u8>>>,
-        Receiver<GameClientEvent<ClientEvent>>,
+        Receiver<GameClientEvent>,
     ) {
         let output = Arc::new(Mutex::new(Vec::new()));
         let output_clone = Arc::clone(&output);
@@ -409,8 +414,8 @@ mod tests {
             actual,
             expected.as_bytes(),
             "expected\n{}, actual\n{}",
-            std::str::from_utf8(actual).unwrap().to_string(),
-            expected
+            expected,
+            from_utf8(actual).unwrap().to_string(),
         )
     }
 
@@ -477,7 +482,7 @@ mod tests {
 
         let (mut client, output, _) = get_test_client_and_output(input, LocalClient {}).await;
 
-        client.get_move().await;
+        client.get_move().await.unwrap();
         assert_client_output(output, "Input a number between 1 and 9 to make your move:\nThat is not a number, please try again.\nInput a number between 1 and 9 to make your move:\n")
     }
 
@@ -503,7 +508,7 @@ mod tests {
         let (mut client, output, mut receiver) =
             get_test_client_and_output(input, LocalClient {}).await;
 
-        client.handle_player_turn_event(1).await;
+        client.handle_player_turn_event(1).await.unwrap();
         assert_client_output(
             output,
             "Player X's turn!\nInput a number between 1 and 9 to make your move:\n",
@@ -512,12 +517,7 @@ mod tests {
         let event = receiver.recv().await;
         assert!(matches!(
             event,
-            Some(GameClientEvent::DispatchToServer {
-                event: MoveMade {
-                    player_id: 1,
-                    move_index: 2
-                }
-            })
+            Some(GameClientEvent::DispatchToServer { .. })
         ))
     }
 
@@ -527,7 +527,7 @@ mod tests {
         let (mut client, output, mut receiver) =
             get_test_client_and_output(input, OnlineClient { id: 1 }).await;
 
-        client.handle_player_turn_event(1).await;
+        client.handle_player_turn_event(1).await.unwrap();
         assert_client_output(
             output,
             "It's your turn!\nInput a number between 1 and 9 to make your move:\n",
@@ -536,12 +536,7 @@ mod tests {
         let event = receiver.recv().await;
         assert!(matches!(
             event,
-            Some(GameClientEvent::DispatchToServer {
-                event: MoveMade {
-                    player_id: 1,
-                    move_index: 3
-                }
-            })
+            Some(GameClientEvent::DispatchToServer { .. })
         ))
     }
 
@@ -551,7 +546,7 @@ mod tests {
         let (mut client, output, mut receiver) =
             get_test_client_and_output(input, OnlineClient { id: 1 }).await;
 
-        client.handle_player_turn_event(2).await;
+        client.handle_player_turn_event(2).await.unwrap();
         assert_client_output(output, "Waiting for other player to make a move.\n");
 
         assert_eq!(Err(TryRecvError::Empty), receiver.try_recv());
