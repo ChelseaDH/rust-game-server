@@ -1,7 +1,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use thiserror::__private::DisplayAsDisplay;
+use thiserror::__private::AsDisplay;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
 use crate::connection::{self, Connection};
